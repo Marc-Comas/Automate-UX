@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Landing Page Builder Dashboard</title>
+    <!--
+      This dashboard is a single‑page application written in plain HTML, CSS and
+      JavaScript.  It provides a modern sidebar layout for managing multiple
+      landing page projects.  Users can create new projects via prompts,
+      preview the generated sites, and download the source code to deploy on
+      Netlify or push to GitHub.  See style.css and script.js for further
+      details.
+    -->
+    <link rel="stylesheet" href="style.css">
+    <!-- Load JSZip for creating ZIP archives on the client side -->
+    <script src="jszip.min.js"></script>
+</head>
+<body>
+    <div id="sidebar">
+        <div class="logo">SiteBuilder</div>
+        <nav>
+            <ul>
+                <li class="nav-item active" data-view="dashboard">Dashboard</li>
+                <li class="nav-item" data-view="new">New Project</li>
+                <li class="nav-item" data-view="profile">Profile</li>
+                <li class="nav-item" data-view="faq">FAQ</li>
+                <li class="nav-item" data-view="settings">Settings</li>
+                <li class="nav-item" data-view="support">Support</li>
+            </ul>
+        </nav>
+    </div>
+    <div id="main">
+        <!-- Dashboard view: lists existing projects -->
+        <section id="dashboard-view" class="view">
+            <header class="view-header">
+                <h2>Your Projects</h2>
+                <button id="btn-new" class="primary">+ New Project</button>
+            </header>
+            <div id="project-list" class="project-list">
+                <!-- Project cards get injected here by script.js -->
+            </div>
+        </section>
+        <!-- New project view: form to collect project name and prompt -->
+        <section id="new-view" class="view hidden">
+            <header class="view-header">
+                <h2>Create New Project</h2>
+            </header>
+            <form id="new-project-form" class="form">
+                <label>
+                    Project Name
+                    <input type="text" id="project-name" placeholder="e.g. My SaaS Startup" required>
+                </label>
+                <label>
+                    Prompt
+                    <textarea id="project-prompt" rows="5" placeholder="Describe the purpose, features and style of your landing page" required></textarea>
+                </label>
+                <div class="form-actions">
+                    <button type="submit" class="primary">Generate</button>
+                    <button type="button" id="btn-cancel" class="secondary">Cancel</button>
+                </div>
+            </form>
+        </section>
+        <!-- Placeholder sections for future expansion (profile/FAQ/settings/support) -->
+        <section id="profile-view" class="view hidden"><h2>Profile</h2><p>Coming soon...</p></section>
+        <section id="faq-view" class="view hidden"><h2>FAQ</h2><p>Coming soon...</p></section>
+        <section id="settings-view" class="view hidden"><h2>Settings</h2><p>Coming soon...</p></section>
+        <section id="support-view" class="view hidden"><h2>Support</h2><p>Coming soon...</p></section>
+    </div>
+    <script src="script.js"></script>
+</body>
+</html>

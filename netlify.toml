@@ -1,0 +1,3 @@
+[functions]
+  # Netlify will look for serverless functions in this directory.
+  directory = "netlify/functions"
