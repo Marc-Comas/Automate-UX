@@ -1,0 +1,11 @@
+# Evita pujar dependències pesades
+node_modules/
+
+# Configuració local i secrets
+.env
+.DS_Store
+.vscode/
+*.log
+
+# Zip de projectes generats
+*.zip
