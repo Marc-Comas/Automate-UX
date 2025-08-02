@@ -64,7 +64,19 @@
         <!-- Placeholder sections for future expansion (profile/FAQ/settings/support) -->
         <section id="profile-view" class="view hidden"><h2>Profile</h2><p>Coming soon...</p></section>
         <section id="faq-view" class="view hidden"><h2>FAQ</h2><p>Coming soon...</p></section>
-        <section id="settings-view" class="view hidden"><h2>Settings</h2><p>Coming soon...</p></section>
+        <section id="settings-view" class="view hidden">
+            <h2>Settings</h2>
+            <form id="settings-form" class="form">
+                <label>
+                    GitHub Personal Access Token
+                    <input type="password" id="github-token" placeholder="Enter your GitHub PAT">
+                </label>
+                <div class="form-actions">
+                    <button type="submit" class="primary">Save Token</button>
+                </div>
+            </form>
+            <p id="settings-message"></p>
+        </section>
         <section id="support-view" class="view hidden"><h2>Support</h2><p>Coming soon...</p></section>
     </div>
     <script src="script.js"></script>

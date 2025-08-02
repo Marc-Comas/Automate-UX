@@ -19,9 +19,13 @@
   const NETLIFY_BUILD_HOOK = 'https://api.netlify.com/build_hooks/6870fc2a249a19a924f033d9';
 
   // GitHub personal access token used to push generated projects to a repository.
-  // Treat this as confidential: never log or display it.  The repository
-  // configuration below determines where files will be created.
-  const GITHUB_TOKEN = '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';
+  // IMPORTANT: do NOT hard‑code your token in the source.  Instead, the
+  // dashboard retrieves it from `localStorage` at the moment of upload.  A
+  // small settings form (see index.html) allows the user to store their PAT
+  // securely in the browser.  If the token is missing, the upload will
+  // prompt the user to set it in Settings.
+  // Note: we do not define a constant for the token here; instead, each
+  // upload operation reads `localStorage.getItem('github_token')`.
 
   // Repository and branch where projects will be uploaded.  The GitHub API
   // requires both the owner/name and the branch.  Adjust these values if you
@@ -211,6 +215,12 @@
    * @param {Object} project The project to upload.
    */
   function uploadToGitHub(project) {
+    // Read the token at the moment of upload to ensure the latest value is used
+    const token = localStorage.getItem('github_token');
+    if (!token) {
+      alert('GitHub token not found. Please set your Personal Access Token in Settings before uploading.');
+      return;
+    }
     createZip(project).then((blob) => {
       const reader = new FileReader();
       reader.onload = function () {
@@ -227,7 +237,7 @@
           method: 'PUT',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: 'Bearer ' + GITHUB_TOKEN,
+            Authorization: 'Bearer ' + token,
           },
           body: JSON.stringify(body),
         })
@@ -554,6 +564,32 @@
     renderProjects();
     // Ensure dashboard is visible on load
     showView('dashboard');
+
+    // Settings form to save GitHub token
+    const settingsForm = document.getElementById('settings-form');
+    if (settingsForm) {
+      settingsForm.addEventListener('submit', (e) => {
+        e.preventDefault();
+        const tokenInput = document.getElementById('github-token');
+        const msgEl = document.getElementById('settings-message');
+        if (!tokenInput) return;
+        const token = tokenInput.value.trim();
+        if (!token) {
+          msgEl.textContent = 'Please enter a valid token.';
+          msgEl.style.color = 'red';
+          return;
+        }
+        try {
+          localStorage.setItem('github_token', token);
+          msgEl.textContent = 'Token guardat correctament!';
+          msgEl.style.color = 'green';
+          tokenInput.value = '';
+        } catch (err) {
+          msgEl.textContent = 'No s\'ha pogut guardar el token.';
+          msgEl.style.color = 'red';
+        }
+      });
+    }
   }
 
   // Initialise once the DOM content has loaded
