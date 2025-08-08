@@ -1,8 +1,5 @@
 {
-  "name": "project-central-assistant",
+  "name": "project-central-prod-fixed2",
   "version": "1.0.0",
-  "type": "module",
-  "dependencies": {
-    "openai": "^4.56.0"
-  }
+  "type": "module"
 }
