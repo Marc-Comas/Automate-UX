@@ -1,28 +1,33 @@
-# Automate-UX
-**Automate-UX** és una eina de generació de pàgines web via prompt, pensada per a dissenyadors UX/UI, empreses tecnològiques i projectes ràpids. Inclou una dashboard interactiva per gestionar projectes, generar landings personalitzades i exportar-les a Figma, Netlify o GitHub.
----
+# Project Central — Assistant Ready (Netlify)
 
-## ✨ Funcionalitats principals
+Este repo despliega la dashboard y una Function que llama a tu Assistant de OpenAI.
 
-- Generació de landings via prompt, amb suport per assistents GPT personalitzats
-- Dashboard moderna amb llistat de projectes, preview i gestió
-- Exportació de cada projecte:
-  - ✅ Com ZIP descarregable
-  - ✅ Com prototip Figma (`html to figma`)
-  - ✅ Upload automàtic a GitHub
-  - ✅ Deploy immediat a Netlify
-- Suport per configuració d’API key i token GitHub via settings
+## Estructura
+- `index.html` — Dashboard (usa Function si existe; fallback local si falla)
+- `netlify/functions/generate.js` — Llama al Assistant y devuelve `{ files: { ... } }`
+- `package.json` — Dependencias (OpenAI)
+- `netlify.toml` — Config de Netlify
 
----
+## Deploy rápido en Netlify
+1. Crea un repo nuevo en GitHub y sube estos archivos.
+2. En Netlify: **Add new site > Import from Git** y selecciona el repo.
+3. En **Site settings > Build & deploy > Environment variables** añade:
+   - `OPENAI_API_KEY` = tu `sk-...`
+   - `OPENAI_ASSISTANT_ID` = tu `asst_...`
+4. Deploy. Netlify instalará la lib `openai` y publicará la función en `/.netlify/functions/generate`.
+5. Abre la web. En **New Project** escribe un prompt y pulsa **Generar**.
+   - Si la Function responde OK → verás el proyecto con estado `generated`.
+   - Si falla o no existe → usa el generador local (estado `local`).
 
-## ⚙️ Instruccions locals
-
-### Requisits
-
-- Node.js v18+
-- Clau API d'OpenAI i Assistant ID (ja configurats a Netlify)
-
-### Instal·lació
-
-```bash
-npm install
+## Notas
+- Los tokens guardados en Settings se almacenan en `localStorage` y **no** se usan por la Function. Las keys reales van como **variables de entorno** en Netlify.
+- El Assistant debe responder **exclusivamente JSON** con la forma:
+```json
+{
+  "files": {
+    "index.html": "<html>...</html>",
+    "styles/style.css": "/* opcional */",
+    "scripts/app.js": "// opcional"
+  }
+}
+```

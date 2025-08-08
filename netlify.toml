@@ -1,3 +1,7 @@
+[build]
+command = "npm install"
+functions = "netlify/functions"
+publish = "."
+
 [functions]
-  # Netlify will look for serverless functions in this directory.
-  directory = "netlify/functions"
+node_bundler = "esbuild"
