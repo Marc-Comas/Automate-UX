@@ -35,7 +35,7 @@ STEP 5 – OUTPUT FORMAT (SOLO JSON)
 
     const thrRes = await fetch('https://api.openai.com/v1/threads', {
       method: 'POST',
-      headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
+      headers: openaiHeaders(key),
       body: JSON.stringify({ messages })
     });
     const thread = await thrRes.json();
@@ -43,7 +43,7 @@ STEP 5 – OUTPUT FORMAT (SOLO JSON)
 
     const runRes = await fetch(`https://api.openai.com/v1/threads/${thread.id}/runs`, {
       method: 'POST',
-      headers: { 'Authorization': `Bearer ${key}`, 'Content-Type': 'application/json' },
+      headers: openaiHeaders(key),
       body: JSON.stringify({ assistant_id: asst })
     });
     const run = await runRes.json();
@@ -56,7 +56,7 @@ STEP 5 – OUTPUT FORMAT (SOLO JSON)
       if (Date.now() > deadline) return jsonResp(504, { error: 'Timeout esperando al Assistant' });
       await sleep(1200);
       const rs = await fetch(`https://api.openai.com/v1/threads/${thread.id}/runs/${run.id}`, {
-        headers: { 'Authorization': `Bearer ${key}` }
+        headers: openaiHeaders(key)
       });
       snap = await rs.json();
       status = snap.status;
@@ -64,7 +64,7 @@ STEP 5 – OUTPUT FORMAT (SOLO JSON)
     if (status !== 'completed') return jsonResp(502, { error: 'Run no completado', details: snap });
 
     const msgsRes = await fetch(`https://api.openai.com/v1/threads/${thread.id}/messages`, {
-      headers: { 'Authorization': `Bearer ${key}` }
+      headers: openaiHeaders(key)
     });
     const msgs = await msgsRes.json();
     const txt = extractText(msgs);
@@ -88,3 +88,14 @@ function corsHeaders(){ return {'Access-Control-Allow-Origin':'*','Access-Contro
 function jsonResp(code,obj){ return { statusCode: code, headers: { ...corsHeaders(), 'Content-Type':'application/json' }, body: JSON.stringify(obj) }; }
 function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
 function extractText(msgs){ try{ const data=msgs.data||[]; for(let i=data.length-1;i>=0;i--){const m=data[i]; if(m.role==='assistant'&&Array.isArray(m.content)){ for(const p of m.content){ if(p.type==='text'&&p.text&&p.text.value) return p.text.value; } } } return null; }catch{return null;} }
+function openaiHeaders(key) {
+  const h = {
+    'Authorization': `Bearer ${key}`,
+    'Content-Type': 'application/json',
+    'OpenAI-Beta': 'assistants=v2'
+  };
+  // Opcional si usas clave de PROYECTO (empieza por sk-proj-):
+  if (process.env.OPENAI_PROJECT) h['OpenAI-Project'] = process.env.OPENAI_PROJECT;
+  if (process.env.OPENAI_ORG_ID) h['OpenAI-Organization'] = process.env.OPENAI_ORG_ID;
+  return h;
+}
