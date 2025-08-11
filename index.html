@@ -493,6 +493,7 @@ function wireNewForm(){
     }catch(err){
       files = generateSite({name,prompt}).files;
     }
+    const data = await postJSON('/.netlify/functions/generate', { prompt, name });
     const list=loadProjects(); list.unshift({id,name,slug,desc,status:'generated',files,createdAt:Date.now()}); saveProjects(list);
     form.reset(); $('#local-preview').hidden=true; info.hidden=true; errors.hidden=true;
     location.hash = `#/preview?id=${encodeURIComponent(id)}`;
@@ -517,6 +518,7 @@ function renderPreview(params){
       const prompt = ($('#pv-prompt').value||'').trim(); if(!prompt) throw new Error('Escribe un prompt');
       const r = await fetch('/.netlify/functions/generate', { method:'POST', headers: buildOpenAIHeaders(), body: JSON.stringify({ mode:'edit', prompt, name: proj.name, files: proj.files }) });
       const data = await r.json(); if(!r.ok || !data.files) throw new Error((data.error || 'La función no devolvió archivos') + (data.raw_text ? (': ' + String(data.raw_text).slice(0,160)) : ''));
+      const data = await postJSON('/.netlify/functions/generate', { mode:'edit', prompt, name: proj.name, files: proj.files });
       updateProjectFiles(proj.id, data.files); renderPreview(new URLSearchParams(`id=${encodeURIComponent(proj.id)}`)); pvInfo.textContent='Cambios aplicados (IA).';
     }catch(err){ pvInfo.hidden=true; pvErr.hidden=false; pvErr.textContent='Error: '+err.message; }
   };
