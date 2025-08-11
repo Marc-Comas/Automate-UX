@@ -2,7 +2,7 @@
 <html lang="es">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Project Central — Prod Fixed</title>
+<title>Project Central — Cloud Mode (GitHub Data)</title>
 <style>
 :root{--bg:#0b0f1c;--panel:#ffffff10;--ink:#eef1ff;--pri:#7aa2ff;--danger:#ff6d8c}
 *{box-sizing:border-box}body{margin:0;background:linear-gradient(180deg,#0b0f1c,#0d142c);color:var(--ink);font:15px/1.6 system-ui}
@@ -24,60 +24,13 @@ input,textarea,select{width:100%;padding:10px;border-radius:10px;border:1px soli
 .preview iframe,.preview-iframe{width:100%;height:60vh;background:white;border-radius:10px;border:1px solid #ffffff22}
 .menu-wrap{position:absolute; right:10px; top:10px}
 .menu-btn{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:8px;border:1px solid #ffffff33;background:#0a1026;cursor:pointer}
-.menu-btn:hover{background:#0d1430}
 .menu{position:absolute; right:0; margin-top:6px; min-width:200px; background:#0b1028; border:1px solid #2b3b77; border-radius:12px; padding:6px; box-shadow:0 10px 30px rgba(0,0,0,.35); display:none; z-index:10}
 .menu[aria-hidden="false"]{display:block}
 .menu button{width:100%; text-align:left; padding:8px 10px; border:none; background:transparent; color:var(--ink); border-radius:8px; cursor:pointer}
 .menu button:hover{background:#ffffff12}
 .menu .danger{color:var(--danger)}
-.kbd{font: 11px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; padding:3px 6px; border-radius:6px; background:#0008; border:1px solid #fff2}
+.kbd{font: 11px/1.2 ui-monosace, SFMono-Regular, Menlo, Consolas, monospace; padding:3px 6px; border-radius:6px; background:#0008; border:1px solid #fff2}
 @media (max-width:980px){.layout{grid-template-columns:1fr}}
-
-/* Variables y mínimos */
-:root{
-  --color-primary:#ff2ea1; --color-ink:#111; --color-bg:#fff;
-  --radius:14px; --space-1:8px; --space-2:12px; --space-3:16px; --space-4:24px;
-}
-.carousel{ position:relative; overflow:hidden; border-radius: var(--radius); background: #0002; }
-.carousel .track{
-  display:grid; grid-auto-flow:column; grid-auto-columns:100%;
-  transition: transform .4s ease; will-change: transform;
-}
-.slide{ margin:0; position:relative; }
-.slide img{ width:100%; height:auto; display:block; }
-.slide figcaption{ position:absolute; left:0; bottom:0; padding: var(--space-2) var(--space-3);
-  color:#fff; background: linear-gradient(transparent, #0008); width:100%; font-size:.95rem; }
-
-.carousel .prev, .carousel .next{
-  position:absolute; top:50%; transform: translateY(-50%);
-  background:#000a; color:#fff; border:none; width:40px; height:40px; border-radius:999px;
-  display:grid; place-items:center; cursor:pointer;
-}
-.carousel .prev{ left:10px } .carousel .next{ right:10px }
-.carousel .prev:focus-visible, .carousel .next:focus-visible{ outline:2px solid var(--color-primary) }
-
-.carousel .dots{
-  position:absolute; left:50%; transform:translateX(-50%); bottom:8px;
-  display:flex; gap:6px; padding:6px 8px; background:#0006; border-radius: 999px;
-}
-.carousel .dots button{
-  width:8px; height:8px; border-radius:999px; border:0; background:#fff9; cursor:pointer;
-}
-.carousel .dots button.is-active{ background: var(--color-primary); }
-@media (prefers-reduced-motion: reduce){
-  .carousel .track{ transition:none }
-}
-
-#faq{ padding: var(--space-4) 0 }
-.faq{ border-bottom: 1px solid #ffffff22; padding: var(--space-2) 0 }
-.faq-q{
-  width:100%; text-align:left; background:transparent; border:none; color:inherit;
-  font: inherit; padding: var(--space-2) 0; cursor:pointer;
-}
-.faq-q:focus-visible{ outline:2px solid var(--color-primary) }
-.faq-a{ padding: 0 0 var(--space-2) 0; color: #dbe0ff; }
-
-
 </style>
 </head>
 <body>
@@ -151,41 +104,33 @@ input,textarea,select{width:100%;padding:10px;border-radius:10px;border:1px soli
     <!-- SETTINGS -->
     <section data-route="settings" class="route" hidden>
       <h2>Settings</h2>
-      <p>En <span class="kbd">localhost</span> puedes usar claves locales. En producción se usarán <strong>variables de entorno</strong> y se ocultarán los campos sensibles.</p>
-      <label>Acento</label>
+      <p>Modo local-first con opción de <strong>Cloud mode (GitHub data repo)</strong>.</p>
+
+      <h3>Cloud</h3>
+      <label><input type="checkbox" id="cloud-mode"> Cloud mode (GitHub)</label>
+      <div class="row" style="margin-top:8px">
+        <button class="btn" id="sync-cloud">Sync desde nube → local</button>
+        <button class="btn" id="migrate-cloud">Migrar locales → nube</button>
+      </div>
+
+      <h3 style="margin-top:16px">Acento</h3>
       <select id="color-accent">
         <option value="#7aa2ff">Azul</option><option value="#52d6ca">Turquesa</option>
         <option value="#ff7ab6">Magenta</option><option value="#ffd166">Ámbar</option>
       </select>
 
-      <h3>APIs</h3>
+      <h3>APIs (local dev)</h3>
       <div id="secrets-local">
-        <label>GitHub Token</label><input id="gh-token" type="password" placeholder="ghp_...">
-        <label>Netlify Token</label><input id="netlify-token" type="password" placeholder="token netlify">
-        <div class="row"><div style="flex:1">
-          <label>OpenAI API Key</label><input id="openai-key" type="password" placeholder="sk-...">
-        </div><div style="flex:1">
-          <label>OpenAI Assistant ID</label><input id="openai-asst" placeholder="asst_...">
-        </div></div>
+        <label>OpenAI API Key</label><input id="openai-key" type="password" placeholder="sk-...">
+        <label>OpenAI Assistant ID</label><input id="openai-asst" placeholder="asst_...">
       </div>
-      <div id="secrets-prod" class="alert" hidden>En producción, las claves se leen del servidor (variables de entorno). Estos campos se han ocultado.</div>
-
-      <h3>Repos / Deploy</h3>
-      <div class="row"><div style="flex:1">
-        <label>GitHub Owner</label><input id="gh-owner" placeholder="tu-usuario">
-      </div><div style="flex:1">
-        <label>GitHub Repo (por proyecto)</label><input id="gh-repo" placeholder="mi-landing">
-      </div></div>
-      <div class="row"><div style="flex:1">
-        <label>Netlify Site ID</label><input id="netlify-site" placeholder="xxxxx-xxxxxx">
-      </div><div style="flex:1">
-        <label>Netlify Build Hook URL</label><input id="netlify-hook" placeholder="https://api.netlify.com/build_hooks/...">
-      </div></div>
+      <div id="secrets-prod" class="alert" hidden>En producción se usan variables de entorno.</div>
 
       <div class="row" style="margin-top:12px">
         <button class="btn" id="toggle-visibility" type="button">Mostrar</button>
         <button class="btn primary" id="save-settings" type="button">Guardar</button>
       </div>
+
       <div class="row" style="margin-top:8px">
         <button class="btn" id="export-all" type="button">Exportar settings + proyectos</button>
         <input type="file" id="import-file" accept="application/json" style="display:none">
@@ -204,76 +149,31 @@ input,textarea,select{width:100%;padding:10px;border-radius:10px;border:1px soli
   </main>
 </div>
 
-<div class="carousel" data-carousel id="gallery">
-  <div class="track">
-    <figure class="slide">
-      <picture>
-        <!-- Ejemplo con responsive -->
-        <source srcset="assets/gallery/01-800.jpg 800w, assets/gallery/01-1200.jpg 1200w" sizes="(min-width: 900px) 800px, 100vw" type="image/jpeg">
-        <img src="assets/gallery/01-800.jpg" alt="Escalada modular 1" loading="lazy" decoding="async">
-      </picture>
-      <figcaption>Climber on a modular wall</figcaption>
-    </figure>
-
-    <!-- Repite .slide por cada imagen -->
-  </div>
-
-  <button class="prev" aria-label="Anterior" data-prev>‹</button>
-  <button class="next" aria-label="Siguiente" data-next>›</button>
-  <div class="dots" aria-label="Paginación" data-dots></div>
-</div>
-
-<section id="faq" aria-label="Preguntas frecuentes">
-  <div class="faq">
-    <button class="faq-q" aria-expanded="false">
-      ¿Cómo funciona la instalación?
-    </button>
-    <div class="faq-a" hidden>
-      Instalamos en 48–72h, con certificación de seguridad y manual de uso.
-    </div>
-  </div>
-  <!-- Repite .faq tantas veces como preguntas -->
-</section>
-
-
 <script>
 const STATE_KEY='pcentral-state';
 const $=s=>document.querySelector(s);
 const routes=['dashboard','new','preview','settings','profile'];
 const IS_PROD = !/^(localhost|127\.0\.0\.1)/.test(location.hostname);
 
-async function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
-async function postJSON(url, body){
-  const r = await fetch(url, {
-    method:'POST',
-    headers: buildOpenAIHeaders(),
-    body: JSON.stringify(body||{})
-  });
-  const ct = r.headers.get('content-type') || '';
-  const text = await r.text();
-  let data=null; try{ data = text ? JSON.parse(text) : null }catch{}
-  if(!r.ok){
-    const msg = (data && data.error) ? data.error : (text || (r.status+' '+r.statusText));
-    throw new Error(String(msg).slice(0,500));
-  }
-  if(!data) throw new Error('Respuesta vacía del servidor');
-  return data;
-}
-
 window.addEventListener('hashchange', renderRoute);
 window.addEventListener('DOMContentLoaded', ()=>{
-  if(!localStorage.getItem(STATE_KEY)){
-    localStorage.setItem(STATE_KEY, JSON.stringify({version:1,savedAt:Date.now(),settings:{},projects:[]}));
-  }
+  if(!localState()) setLocalState({version:1,savedAt:Date.now(),settings:{},projects:[]});
   renderRoute(); loadSettingsIntoUI(); renderProjects(); wireNewForm(); renderConnections(); bindGlobalMenuClose();
+  const st = getSettings();
+  if(st.cloudMode){ syncFromCloud().then(()=>renderProjects()).catch(()=>{}); }
 });
 
-function getState(){ try{ return JSON.parse(localStorage.getItem(STATE_KEY)||'{}') }catch{ return {settings:{},projects:[]} } }
-function setState(next){ localStorage.setItem(STATE_KEY, JSON.stringify({version:1, savedAt:Date.now(), settings: next.settings||{}, projects: next.projects||[]})); }
-function getSettings(){ return getState().settings||{}; }
-function setSettings(s){ const st=getState(); st.settings=s||{}; setState(st); }
-function loadProjects(){ return getState().projects||[]; }
-function saveProjects(arr){ const st=getState(); st.projects=Array.isArray(arr)?arr:[]; setState(st); }
+/* ===== State helpers (local cache) ===== */
+function localState(){
+  try { return JSON.parse(localStorage.getItem(STATE_KEY)||''); } catch { return null; }
+}
+function setLocalState(next){
+  localStorage.setItem(STATE_KEY, JSON.stringify({version:1, savedAt:Date.now(), settings: next.settings||{}, projects: next.projects||[]}));
+}
+function getSettings(){ const st=localState(); return (st && st.settings) || {}; }
+function setSettings(s){ const st=localState()||{settings:{},projects:[]}; st.settings=s||{}; setLocalState(st); }
+function loadProjectsLocal(){ const st=localState(); return (st && st.projects) || []; }
+function saveProjectsLocal(arr){ const st=localState()||{settings:{},projects:[]}; st.projects=Array.isArray(arr)?arr:[]; setLocalState(st); }
 
 function routeEls(){return document.querySelectorAll('.route')}
 function renderRoute(){
@@ -288,12 +188,42 @@ function renderRoute(){
   $('#main').focus();
 }
 
-function uuid(){return 'p-'+Math.random().toString(36).slice(2,8)+'-'+Date.now().toString(36)}
-function slugify(s){return (s||'').toLowerCase().replace(/[^a-z0-9-]+/g,'-').replace(/^-+|-+$/g,'').slice(0,60)||'site'}
-function escapeHtml(s=''){return s.replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
+/* ===== GitHub Cloud API client (via Netlify Functions) ===== */
+async function apiListProjects(){
+  const r = await fetch('/.netlify/functions/projects-list');
+  const data = await r.json().catch(()=>({}));
+  if(!r.ok) throw new Error(data.error || 'github_list_error');
+  return data.projects||[];
+}
+async function apiGetProject(id){
+  const r = await fetch('/.netlify/functions/projects-get?id='+encodeURIComponent(id));
+  const data = await r.json().catch(()=>({}));
+  if(!r.ok) throw Object.assign(new Error(data.error||'github_get_error'), {data});
+  return data;
+}
+async function apiSaveProject(project, files){
+  const r = await fetch('/.netlify/functions/projects-save', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ project, files })});
+  const data = await r.json().catch(()=>({}));
+  if(!r.ok) throw Object.assign(new Error(data.error||'github_save_error'), {data});
+  return data;
+}
+async function apiDeleteProject(id){
+  const r = await fetch('/.netlify/functions/projects-delete', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ id })});
+  const data = await r.json().catch(()=>({}));
+  if(!r.ok) throw Object.assign(new Error(data.error||'github_delete_error'), {data});
+  return data;
+}
+async function syncFromCloud(){
+  const list = await apiListProjects();
+  const st = localState()||{settings:{},projects:[]};
+  const map=new Map(); (st.projects||[]).forEach(p=>map.set(p.id,p)); (list||[]).forEach(p=>map.set(p.id,p));
+  st.projects = Array.from(map.values());
+  setLocalState(st);
+}
 
+/* ===== Projects rendering/list ===== */
 function renderProjects(){
-  const list=loadProjects(); const ul=$('#projects-list'); ul.innerHTML='';
+  const list=loadProjectsLocal(); const ul=$('#projects-list'); ul.innerHTML='';
   $('#projects-empty').hidden=list.length>0;
   for(const p of list){
     const li=document.createElement('li'); li.className='card';
@@ -334,21 +264,17 @@ function renderProjects(){
 
   ul.onclick=async(e)=>{
     const btn=e.target.closest('button[data-act]'); if(!btn) return;
-    const id=btn.dataset.id; const proj=loadProjects().find(x=>x.id===id); if(!proj) return;
+    const id=btn.dataset.id; const proj=(loadProjectsLocal().find(x=>x.id===id)); if(!proj) return;
     const action=btn.dataset.act;
     closeAllMenus();
     if(action==='view'){ openPreview(proj); }
     if(action==='zip'){
-      const blob=makeZip(proj.files); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`${proj.name}.zip`; a.click(); URL.revokeObjectURL(a.href);
+      const blob=makeZip(proj.files||{}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`${proj.name}.zip`; a.click(); URL.revokeObjectURL(a.href);
     }
-    if(action==='push'){
-      await doPush(proj);
-    }
-    if(action==='deploy-real'){
-      await doDeploy();
-    }
+    if(action==='push'){ alert('Push a GitHub: usa tu función existente (sin cambios).'); }
+    if(action==='deploy-real'){ alert('Trigger Netlify: usa tu función existente (sin cambios).'); }
     if(action==='delete'){
-      if(confirm('¿Seguro que quieres borrar este proyecto?')){ deleteProject(id); renderProjects(); }
+      if(confirm('¿Seguro que quieres borrar este proyecto?')){ await deleteProject(proj.id); renderProjects(); }
     }
   };
 }
@@ -362,11 +288,10 @@ function bindGlobalMenuClose(){
     if(!e.target.closest('.menu') && !e.target.closest('[data-menu-btn]')) closeAllMenus();
   });
 }
-function deleteProject(id){
-  const list=loadProjects().filter(p=>p.id!==id);
-  saveProjects(list);
-}
+function uuid(){return 'p-'+Math.random().toString(36).slice(2,8)+'-'+Date.now().toString(36)}
+function slugify(s){return (s||'').toLowerCase().replace(/[^a-z0-9-]+/g,'-').replace(/^-+|-+$/g,'').slice(0,60)||'site'}
 
+/* ===== ZIP (store) ===== */
 const CRC_TABLE=(()=>{let c,t=[];for(let n=0;n<256;n++){c=n;for(let k=0;k<8;k++){c=c&1?0xedb88320^(c>>>1):c>>>1}t[n]=c>>>0}return t})();
 function crc32Uint8(a){let c=0xffffffff;for(let i=0;i<a.length;i++){c=CRC_TABLE[(c^a[i])&0xff]^(c>>>8)}return (c^0xffffffff)>>>0}
 function strToU8(s){return new TextEncoder().encode(s)}
@@ -447,9 +372,10 @@ function makeZip(files){
   return new Blob([out],{type:'application/zip'});
 }
 
+/* ===== OpenAI headers (local dev) ===== */
 function getSettingsSafe(){ try { return (JSON.parse(localStorage.getItem(STATE_KEY)||'{}').settings)||{} } catch { return {}; } }
 function buildOpenAIHeaders(){
-  const headers = {'Content-Type':'application/json','Accept':'application/json'};
+  const headers = {'Content-Type':'application/json'};
   if(!IS_PROD){
     const st = getSettingsSafe();
     if(st.openaiKey) headers['x-openai-key'] = st.openaiKey;
@@ -458,19 +384,14 @@ function buildOpenAIHeaders(){
   return headers;
 }
 
+/* ===== New / Generate ===== */
 function generateSite({name,prompt}){
-  const dark=/oscuro|dark/i.test(prompt); const accent=(getSettings().accent)||'#7aa2ff';
-  const css=`:root{--ink:${dark?'#f2f4ff':'#111'};--bg:${dark?'#0b0f1c':'#fff'};--pri:${accent}}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.65 system-ui}`;
+  const accent=(getSettings().accent)||'#7aa2ff';
+  const css=`:root{--color-primary:${accent};--color-bg:#fff;--font-heading:system-ui;--font-body:system-ui}body{margin:0;background:var(--color-bg);color:#111;font:16px/1.65 system-ui}`;
   const body=`<main class="wrap"><h1>${escapeHtml(name)}</h1><p>${escapeHtml(prompt)}</p></main>`;
-  return {files:{'index.html':`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(name)}</title><style>${css}</style></head><body>${body}</body></html>`}};
+  return {files:{'index.html':`<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(name)}</title><style>${css}</style></head><body>${body}</body></html>`}};
 }
-function localEdit(files, promptText){
-  const src = files['index.html']||'<html><body><h1>Sin index.html</h1></body></html>';
-  let out = src;
-  if(/oscuro|dark/i.test(promptText)){ out = out.replace('<style>', '<style>body{background:#0b0f1c;color:#f2f4ff;}'); }
-  out = out.replace('</body>', `<section style="padding:24px;border-top:1px solid #ddd"><h3>Cambio aplicado</h3><p>${escapeHtml(promptText||'Actualización')}</p></section></body>`);
-  return {...files, 'index.html': out};
-}
+function escapeHtml(s=''){return s.replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
 
 function wireNewForm(){
   const form=$('#new-form'); const info=$('#form-info'); const errors=$('#form-errors');
@@ -493,77 +414,133 @@ function wireNewForm(){
     }catch(err){
       files = generateSite({name,prompt}).files;
     }
-    const list=loadProjects(); list.unshift({id,name,slug,desc,status:'generated',files,createdAt:Date.now()}); saveProjects(list);
+    const proj={id,name,slug,desc,status:'generated',files,createdAt:Date.now(),updatedAt:Date.now()};
+    await upsertProject(proj);
     form.reset(); $('#local-preview').hidden=true; info.hidden=true; errors.hidden=true;
     location.hash = `#/preview?id=${encodeURIComponent(id)}`;
   };
 }
 function resetNewFormUI(){ const form=$('#new-form'); if(!form) return; form.reset(); $('#form-info').hidden=true; $('#form-errors').hidden=true; $('#local-preview').hidden=true; }
 
+/* ===== Upsert/Delete con Cloud mode ===== */
+async function upsertProject(p){
+  const cur = loadProjectsLocal();
+  const i = cur.findIndex(x=>x.id===p.id);
+  if(i>=0) cur[i]=p; else cur.unshift(p);
+  saveProjectsLocal(cur);
+
+  const st=getSettings();
+  if(st.cloudMode){
+    const meta={...p}; delete meta.files;
+    try{ await apiSaveProject(meta, p.files||{}); }catch(err){ alert('Error guardando en nube: '+(err.message||'')); }
+  }
+  renderProjects();
+}
+async function deleteProject(id){
+  const cur = loadProjectsLocal().filter(p=>p.id!==id);
+  saveProjectsLocal(cur);
+  const st=getSettings();
+  if(st.cloudMode){
+    try{ await apiDeleteProject(id); }catch(err){ alert('Error borrando en nube: '+(err.message||'')); }
+  }
+}
+
+/* ===== Preview ===== */
+function getProjectByIdLocal(id){ return loadProjectsLocal().find(p=>p.id===id); }
 function openPreview(proj){ location.hash = `#/preview?id=${encodeURIComponent(proj.id)}`; }
-function getProjectById(id){ return loadProjects().find(p=>p.id===id); }
-function renderPreview(params){
-  const id = params.get('id'); const proj = id ? getProjectById(id) : null;
-  const pvTitle = $('#pv-title'); const pvInfo=$('#pv-info'); const pvErr=$('#pv-error');
+async function renderPreview(params){
+  const id = params.get('id');
+  let proj = id ? getProjectByIdLocal(id) : null;
   if(!proj){ location.hash='#/dashboard'; return; }
+
+  const st=getSettings();
+  if(st.cloudMode && (!proj.files || !proj.files['index.html'])){
+    try{
+      const data = await apiGetProject(id);
+      if(data && data.files){
+        proj = {...proj, files: data.files};
+        await upsertProject(proj);
+      }
+    }catch{}
+  }
+
+  const pvTitle = $('#pv-title'); const pvInfo=$('#pv-info'); const pvErr=$('#pv-error');
   pvTitle.textContent = `Preview — ${proj.name}`;
   const iframe = $('#pv-iframe');
   const html = (proj.files && proj.files['index.html']) ? proj.files['index.html'] : '<h1>Sin index.html</h1>';
   iframe.src = URL.createObjectURL(new Blob([html],{type:'text/html'}));
+
   $('#pv-download').onclick=()=>{ const blob=makeZip(proj.files||{}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`${proj.name}.zip`; a.click(); URL.revokeObjectURL(a.href); };
+
   $('#pv-apply-ai').onclick = async ()=>{
     pvInfo.hidden=false; pvInfo.textContent='Aplicando cambios con IA...'; pvErr.hidden=true;
     try{
       const prompt = ($('#pv-prompt').value||'').trim(); if(!prompt) throw new Error('Escribe un prompt');
       const r = await fetch('/.netlify/functions/generate', { method:'POST', headers: buildOpenAIHeaders(), body: JSON.stringify({ mode:'edit', prompt, name: proj.name, files: proj.files }) });
-      const data = await r.json(); if(!r.ok || !data.files) throw new Error((data.error || 'La función no devolvió archivos') + (data.raw_text ? (': ' + String(data.raw_text).slice(0,160)) : ''));
-      updateProjectFiles(proj.id, data.files); renderPreview(new URLSearchParams(`id=${encodeURIComponent(proj.id)}`)); pvInfo.textContent='Cambios aplicados (IA).';
-    }catch(err){ pvInfo.hidden=true; pvErr.hidden=false; pvErr.textContent='Error: '+err.message; }
+      const data = await r.json();
+      if(!r.ok || !data.files) throw new Error(data.error||'La función no devolvió archivos');
+      const updated = {...proj, files: data.files, status:'edited', updatedAt: Date.now()};
+      await upsertProject(updated);
+      renderPreview(new URLSearchParams(`id=${encodeURIComponent(proj.id)}`)); pvInfo.textContent='Cambios aplicados (IA).';
+    }catch(err){ pvInfo.hidden=true; pvErr.hidden=false; pvErr.textContent='Error: '+(err.message||''); }
   };
   $('#pv-apply-local').onclick = ()=>{
     const txt = ($('#pv-prompt').value||'').trim();
-    const updated = localEdit(proj.files||{}, txt);
-    updateProjectFiles(proj.id, updated);
-    renderPreview(new URLSearchParams(`id=${encodeURIComponent(proj.id)}`));
-    pvInfo.hidden=false; pvInfo.textContent='Cambios aplicados (local).'; pvErr.hidden=true;
+    const updatedFiles = localEdit(proj.files||{}, txt);
+    const updated = {...proj, files: updatedFiles, status:'edited', updatedAt: Date.now()};
+    upsertProject(updated).then(()=>{
+      renderPreview(new URLSearchParams(`id=${encodeURIComponent(proj.id)}`));
+      pvInfo.hidden=false; pvInfo.textContent='Cambios aplicados (local).'; pvErr.hidden=true;
+    });
   };
 }
-function updateProjectFiles(id, newFiles){ const list=loadProjects(); const i=list.findIndex(p=>p.id===id); if(i<0) return; list[i].files=newFiles; list[i].status='edited'; saveProjects(list); renderProjects(); }
 
+function localEdit(files, promptText){
+  const src = files['index.html']||'<html><body><h1>Sin index.html</h1></body></html>';
+  let out = src;
+  if(/oscuro|dark/i.test(promptText)){ out = out.replace('<style>', '<style>body{background:#0b0f1c;color:#f2f4ff;}'); }
+  out = out.replace('</body>', `<section style="padding:24px;border-top:1px solid #ddd"><h3>Cambio aplicado</h3><p>${escapeHtml(promptText||'Actualización')}</p></section></body>`);
+  return {...files, 'index.html': out};
+}
+
+/* ===== Settings ===== */
 function loadSettingsIntoUI(){
   const st=getSettings();
+  $('#cloud-mode').checked = !!st.cloudMode;
+  $('#sync-cloud').onclick = async()=>{ try{ await syncFromCloud(); renderProjects(); info('Sincronizado desde nube'); }catch(e){ err('No se pudo sincronizar'); } };
+  $('#migrate-cloud').onclick = async()=>{
+    try{
+      const list = loadProjectsLocal();
+      if(!confirm(`Subir ${list.length} proyectos al repositorio de datos?`)) return;
+      for(const p of list){
+        const meta={...p}; delete meta.files;
+        await apiSaveProject(meta, p.files||{});
+      }
+      info('Migración completada');
+    }catch(e){ err('Error migrando: '+(e.message||'')); }
+  };
+
   if(st.accent){ $('#color-accent').value=st.accent; document.documentElement.style.setProperty('--pri',st.accent); }
   $('#secrets-local').hidden = IS_PROD;
   $('#secrets-prod').hidden = !IS_PROD;
   if(!IS_PROD){
-    if(st.ghToken) $('#gh-token').value = st.ghToken;
-    if(st.netlifyToken) $('#netlify-token').value = st.netlifyToken;
     if(st.openaiKey) $('#openai-key').value = st.openaiKey;
     if(st.openaiAsst) $('#openai-asst').value = st.openaiAsst;
   }
-  if(st.ghOwner) $('#gh-owner').value = st.ghOwner;
-  if(st.ghRepo) $('#gh-repo').value = st.ghRepo;
-  if(st.netlifySiteId) $('#netlify-site').value = st.netlifySiteId;
-  if(st.netlifyHook) $('#netlify-hook').value = st.netlifyHook;
 
   $('#save-settings').onclick=()=>{
     const next={
-      accent: $('#color-accent').value,
-      ghOwner: $('#gh-owner').value.trim(),
-      ghRepo: $('#gh-repo').value.trim(),
-      netlifySiteId: $('#netlify-site').value.trim(),
-      netlifyHook: $('#netlify-hook').value.trim()
+      cloudMode: $('#cloud-mode').checked,
+      accent: $('#color-accent').value
     };
     if(!IS_PROD){
-      next.ghToken = ($('#gh-token').value||'').trim();
-      next.netlifyToken = ($('#netlify-token').value||'').trim();
       next.openaiKey = ($('#openai-key').value||'').trim();
       next.openaiAsst = ($('#openai-asst').value||'').trim();
     }
     setSettings(next);
     document.documentElement.style.setProperty('--pri',next.accent||'#7aa2ff');
-    flashInfo('Preferencias guardadas');
-    renderConnections();
+    info('Preferencias guardadas');
+    if(next.cloudMode){ syncFromCloud().then(()=>renderProjects()); }
   };
 
   $('#toggle-visibility').onclick=()=>{
@@ -575,7 +552,7 @@ function loadSettingsIntoUI(){
   };
 
   $('#export-all').onclick=()=>{
-    const payload = {...getState(), exportedAt: Date.now()};
+    const payload = {...localState(), exportedAt: Date.now()};
     const blob=new Blob([JSON.stringify(payload,null,2)],{type:'application/json'});
     const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='project-central-export.json'; a.click(); URL.revokeObjectURL(a.href);
   };
@@ -587,109 +564,32 @@ function loadSettingsIntoUI(){
       try{
         const incoming=JSON.parse(reader.result);
         const overwrite = confirm('¿Sobrescribir TODO? Cancel = MERGE.');
-        if(overwrite){ setState({settings: incoming.settings||{}, projects: incoming.projects||[]}); }
+        if(overwrite){ setLocalState({settings: incoming.settings||{}, projects: incoming.projects||[]}); }
         else{
-          const cur=getState();
+          const cur=localState()||{settings:{},projects:[]};
           const mergedSettings = {...cur.settings, ...(incoming.settings||{})};
           const map=new Map(); (cur.projects||[]).forEach(p=>map.set(p.id,p)); (incoming.projects||[]).forEach(p=>map.set(p.id,p));
-          setState({settings: mergedSettings, projects: Array.from(map.values())});
+          setLocalState({settings: mergedSettings, projects: Array.from(map.values())});
         }
-        loadSettingsIntoUI(); renderProjects(); renderConnections(); flashInfo('Importación completada');
-      }catch(err){ flashError('Error importando: '+err.message); }
+        loadSettingsIntoUI(); renderProjects(); renderConnections(); info('Importación completada');
+      }catch(e){ err('Error importando: '+e.message); }
     };
     reader.readAsText(file);
   };
-  $('#clear-all').onclick=()=>{ if(confirm('¿Borrar TODOS los settings y proyectos?')){ setState({settings:{},projects:[]}); loadSettingsIntoUI(); renderProjects(); renderConnections(); flashInfo('Todo borrado'); } };
+  $('#clear-all').onclick=()=>{ if(confirm('¿Borrar TODOS los settings y proyectos (solo local)?')){ setLocalState({settings:{},projects:[]}); loadSettingsIntoUI(); renderProjects(); renderConnections(); info('Todo borrado'); } };
 }
-function flashInfo(msg){ const el=$('#settings-info'); el.hidden=false; el.textContent=msg; setTimeout(()=>el.hidden=true, 2000); }
-function flashError(msg){ const el=$('#settings-errors'); el.hidden=false; el.textContent=msg; setTimeout(()=>el.hidden=true, 4000); }
+function info(m){ const el=$('#settings-info'); el.hidden=false; el.textContent=m; setTimeout(()=>el.hidden=true, 2000); }
+function err(m){ const el=$('#settings-errors'); el.hidden=false; el.textContent=m; setTimeout(()=>el.hidden=true, 4000); }
 
 function renderConnections(){
   const st=getSettings(); const wrap=$('#conn-cards');
   const items=[
-    {name:'GitHub', ok: IS_PROD ? true : !!st.ghToken},
-    {name:'Netlify', ok: IS_PROD ? true : (!!st.netlifyToken||!!st.netlifyHook)},
+    {name:'GitHub (data repo)', ok: st.cloudMode ? true : false},
     {name:'OpenAI (server)', ok: IS_PROD ? true : !!st.openaiKey}
   ];
   wrap.innerHTML=items.map(i=>`<div class="card"><h3>${i.name}</h3><p>${i.ok?'OK':'Sin configurar'}</p></div>`).join('');
 }
-
-async function doPush(proj){
-  try{
-    const r = await fetch('/.netlify/functions/push-to-github', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ id: proj.id, name: proj.name, files: proj.files })});
-    const data = await r.json();
-    if(!r.ok) throw new Error(data.error||'Error en push');
-    alert('Push a GitHub completado');
-  }catch(err){ alert('Push falló: '+err.message); }
-}
-async function doDeploy(){
-  try{
-    const r = await fetch('/.netlify/functions/trigger-deploy', {method:'POST'});
-    const data = await r.json();
-    if(!r.ok) throw new Error(data.error||'Error en deploy');
-    alert('Deploy de Netlify lanzado');
-  }catch(err){ alert('Deploy falló: '+err.message); }
-}
-
-document.querySelectorAll('[data-carousel]').forEach(initCarousel);
-
-function initCarousel(root){
-  const track = root.querySelector('.track');
-  const slides = [...track.children];
-  const prev = root.querySelector('[data-prev]');
-  const next = root.querySelector('[data-next]');
-  const dots = root.querySelector('[data-dots]');
-  if(!track || !slides.length || !prev || !next || !dots) return;
-
-  let i = 0;
-
-  // Dots
-  slides.forEach((_, idx) => {
-    const b = document.createElement('button');
-    b.setAttribute('aria-label', `Ir a la diapositiva ${idx+1}`);
-    b.addEventListener('click', () => go(idx));
-    dots.appendChild(b);
-  });
-
-  // Go to index
-  function go(n){
-    i = (n + slides.length) % slides.length;
-    track.style.transform = `translateX(${i * -100}%)`;
-    [...dots.children].forEach((b, bi) => b.classList.toggle('is-active', bi === i));
-  }
-
-  // Controles
-  prev.addEventListener('click', () => go(i - 1));
-  next.addEventListener('click', () => go(i + 1));
-  root.addEventListener('keydown', e => {
-    if (e.key === 'ArrowLeft') prev.click();
-    if (e.key === 'ArrowRight') next.click();
-  });
-
-  // Tacto (swipe ligero)
-  let x0 = null;
-  root.addEventListener('pointerdown', e => (x0 = e.clientX), {passive:true});
-  root.addEventListener('pointerup', e => {
-    if (x0 == null) return;
-    const dx = e.clientX - x0;
-    if (Math.abs(dx) > 40) (dx > 0 ? prev : next).click();
-    x0 = null;
-  }, {passive:true});
-
-  // Grid de columnas = nº de slides
-  track.style.gridTemplateColumns = `repeat(${slides.length}, 100%)`;
-  go(0);
-}
-
-document.querySelectorAll('.faq .faq-q').forEach(btn=>{
-  btn.addEventListener('click', ()=>{
-    const open = btn.getAttribute('aria-expanded') === 'true';
-    btn.setAttribute('aria-expanded', String(!open));
-    btn.nextElementSibling.hidden = open;
-  });
-});
-
-
 </script>
 </body>
 </html>
+
