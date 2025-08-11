@@ -32,6 +32,52 @@ input,textarea,select{width:100%;padding:10px;border-radius:10px;border:1px soli
 .menu .danger{color:var(--danger)}
 .kbd{font: 11px/1.2 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; padding:3px 6px; border-radius:6px; background:#0008; border:1px solid #fff2}
 @media (max-width:980px){.layout{grid-template-columns:1fr}}
+
+/* Variables y mínimos */
+:root{
+  --color-primary:#ff2ea1; --color-ink:#111; --color-bg:#fff;
+  --radius:14px; --space-1:8px; --space-2:12px; --space-3:16px; --space-4:24px;
+}
+.carousel{ position:relative; overflow:hidden; border-radius: var(--radius); background: #0002; }
+.carousel .track{
+  display:grid; grid-auto-flow:column; grid-auto-columns:100%;
+  transition: transform .4s ease; will-change: transform;
+}
+.slide{ margin:0; position:relative; }
+.slide img{ width:100%; height:auto; display:block; }
+.slide figcaption{ position:absolute; left:0; bottom:0; padding: var(--space-2) var(--space-3);
+  color:#fff; background: linear-gradient(transparent, #0008); width:100%; font-size:.95rem; }
+
+.carousel .prev, .carousel .next{
+  position:absolute; top:50%; transform: translateY(-50%);
+  background:#000a; color:#fff; border:none; width:40px; height:40px; border-radius:999px;
+  display:grid; place-items:center; cursor:pointer;
+}
+.carousel .prev{ left:10px } .carousel .next{ right:10px }
+.carousel .prev:focus-visible, .carousel .next:focus-visible{ outline:2px solid var(--color-primary) }
+
+.carousel .dots{
+  position:absolute; left:50%; transform:translateX(-50%); bottom:8px;
+  display:flex; gap:6px; padding:6px 8px; background:#0006; border-radius: 999px;
+}
+.carousel .dots button{
+  width:8px; height:8px; border-radius:999px; border:0; background:#fff9; cursor:pointer;
+}
+.carousel .dots button.is-active{ background: var(--color-primary); }
+@media (prefers-reduced-motion: reduce){
+  .carousel .track{ transition:none }
+}
+
+#faq{ padding: var(--space-4) 0 }
+.faq{ border-bottom: 1px solid #ffffff22; padding: var(--space-2) 0 }
+.faq-q{
+  width:100%; text-align:left; background:transparent; border:none; color:inherit;
+  font: inherit; padding: var(--space-2) 0; cursor:pointer;
+}
+.faq-q:focus-visible{ outline:2px solid var(--color-primary) }
+.faq-a{ padding: 0 0 var(--space-2) 0; color: #dbe0ff; }
+
+
 </style>
 </head>
 <body>
@@ -157,6 +203,38 @@ input,textarea,select{width:100%;padding:10px;border-radius:10px;border:1px soli
     </section>
   </main>
 </div>
+
+<div class="carousel" data-carousel id="gallery">
+  <div class="track">
+    <figure class="slide">
+      <picture>
+        <!-- Ejemplo con responsive -->
+        <source srcset="assets/gallery/01-800.jpg 800w, assets/gallery/01-1200.jpg 1200w" sizes="(min-width: 900px) 800px, 100vw" type="image/jpeg">
+        <img src="assets/gallery/01-800.jpg" alt="Escalada modular 1" loading="lazy" decoding="async">
+      </picture>
+      <figcaption>Climber on a modular wall</figcaption>
+    </figure>
+
+    <!-- Repite .slide por cada imagen -->
+  </div>
+
+  <button class="prev" aria-label="Anterior" data-prev>‹</button>
+  <button class="next" aria-label="Siguiente" data-next>›</button>
+  <div class="dots" aria-label="Paginación" data-dots></div>
+</div>
+
+<section id="faq" aria-label="Preguntas frecuentes">
+  <div class="faq">
+    <button class="faq-q" aria-expanded="false">
+      ¿Cómo funciona la instalación?
+    </button>
+    <div class="faq-a" hidden>
+      Instalamos en 48–72h, con certificación de seguridad y manual de uso.
+    </div>
+  </div>
+  <!-- Repite .faq tantas veces como preguntas -->
+</section>
+
 
 <script>
 const STATE_KEY='pcentral-state';
@@ -534,6 +612,66 @@ async function doDeploy(){
     alert('Deploy de Netlify lanzado');
   }catch(err){ alert('Deploy falló: '+err.message); }
 }
+
+document.querySelectorAll('[data-carousel]').forEach(initCarousel);
+
+function initCarousel(root){
+  const track = root.querySelector('.track');
+  const slides = [...track.children];
+  const prev = root.querySelector('[data-prev]');
+  const next = root.querySelector('[data-next]');
+  const dots = root.querySelector('[data-dots]');
+  if(!track || !slides.length || !prev || !next || !dots) return;
+
+  let i = 0;
+
+  // Dots
+  slides.forEach((_, idx) => {
+    const b = document.createElement('button');
+    b.setAttribute('aria-label', `Ir a la diapositiva ${idx+1}`);
+    b.addEventListener('click', () => go(idx));
+    dots.appendChild(b);
+  });
+
+  // Go to index
+  function go(n){
+    i = (n + slides.length) % slides.length;
+    track.style.transform = `translateX(${i * -100}%)`;
+    [...dots.children].forEach((b, bi) => b.classList.toggle('is-active', bi === i));
+  }
+
+  // Controles
+  prev.addEventListener('click', () => go(i - 1));
+  next.addEventListener('click', () => go(i + 1));
+  root.addEventListener('keydown', e => {
+    if (e.key === 'ArrowLeft') prev.click();
+    if (e.key === 'ArrowRight') next.click();
+  });
+
+  // Tacto (swipe ligero)
+  let x0 = null;
+  root.addEventListener('pointerdown', e => (x0 = e.clientX), {passive:true});
+  root.addEventListener('pointerup', e => {
+    if (x0 == null) return;
+    const dx = e.clientX - x0;
+    if (Math.abs(dx) > 40) (dx > 0 ? prev : next).click();
+    x0 = null;
+  }, {passive:true});
+
+  // Grid de columnas = nº de slides
+  track.style.gridTemplateColumns = `repeat(${slides.length}, 100%)`;
+  go(0);
+}
+
+document.querySelectorAll('.faq .faq-q').forEach(btn=>{
+  btn.addEventListener('click', ()=>{
+    const open = btn.getAttribute('aria-expanded') === 'true';
+    btn.setAttribute('aria-expanded', String(!open));
+    btn.nextElementSibling.hidden = open;
+  });
+});
+
+
 </script>
 </body>
 </html>
