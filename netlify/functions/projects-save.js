@@ -1,37 +1,3 @@
-
-/**
- * POST /.netlify/functions/projects-save
- * Body: { project: {...}, files: {...} }
- * - UPSERT: actualiza meta.json y files.json
- * - Actualiza pcentral/projects.json
- */
-
-/** Shared helpers for GitHub Content API */
-function env(k, fallback) {
-  return process.env[k] || fallback || '';
-}
-function dataOwner() { return env('GH_DATA_OWNER', env('GH_OWNER')); }
-function dataRepo()  { return env('GH_DATA_REPO',  env('GH_REPO')); }
-function dataBranch(){ return env('GH_DATA_BRANCH', env('GH_BRANCH', 'main')); }
-
-function cors() {
-  return {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
-    'Access-Control-Max-Age': '600'
-  };
-}
-function json(code, obj) {
-  return { statusCode: code, headers: { ...cors(), 'Content-Type': 'application/json' }, body: JSON.stringify(obj) };
-}
-function ok(obj){ return json(200, obj); }
-function bad(msg){ return json(400, { error: msg }); }
-function server(err){ return json(500, { error: 'server_error', details: (err?.message || String(err)) }); }
-
-function ghHeaders() {
-  const token = env('GITHUB_TOKEN');
-  if (!token) throw new Error('Missing GITHUB_TOKEN');
   return {
     'Authorization': `Bearer ${token}`,
     'Content-Type': 'application/json',
