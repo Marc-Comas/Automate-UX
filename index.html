@@ -242,18 +242,21 @@ const $=s=>document.querySelector(s);
 const routes=['dashboard','new','preview','settings','profile'];
 const IS_PROD = !/^(localhost|127\.0\.0\.1)/.test(location.hostname);
 
-async function fetchJSON(url, opts={}){
-  const res = await fetch(url, { headers:{ Accept:'application/json', ...(opts.headers||{}) }, ...opts });
-  const text = await res.text();
-  let data = null;
-  try { data = text ? JSON.parse(text) : null; } catch(e){}
-  if(!res.ok){
-    const msg = data && data.error ? data.error : (text || (res.status+' '+res.statusText));
-    const err = new Error(String(msg).slice(0,500));
-    err.status = res.status; err.details = data || text;
-    throw err;
+async function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
+async function postJSON(url, body){
+  const r = await fetch(url, {
+    method:'POST',
+    headers: buildOpenAIHeaders(),
+    body: JSON.stringify(body||{})
+  });
+  const ct = r.headers.get('content-type') || '';
+  const text = await r.text();
+  let data=null; try{ data = text ? JSON.parse(text) : null }catch{}
+  if(!r.ok){
+    const msg = (data && data.error) ? data.error : (text || (r.status+' '+r.statusText));
+    throw new Error(String(msg).slice(0,500));
   }
-  if(!data){ throw new Error('Respuesta vacía del servidor'); }
+  if(!data) throw new Error('Respuesta vacía del servidor');
   return data;
 }
 
@@ -485,7 +488,8 @@ function wireNewForm(){
     const slug=slugify(name); const id=uuid();
     let files;
     try{
-      const data = await fetchJSON('/.netlify/functions/generate',{method:'POST',headers:buildOpenAIHeaders(),body:JSON.stringify({prompt,name})}); files = data.files;
+      const r=await fetch('/.netlify/functions/generate',{method:'POST',headers:buildOpenAIHeaders(),body:JSON.stringify({prompt,name})});
+      const data=await r.json(); if(!r.ok) throw new Error(data.error||'Error de generación'); files = data.files;
     }catch(err){
       files = generateSite({name,prompt}).files;
     }
@@ -511,8 +515,8 @@ function renderPreview(params){
     pvInfo.hidden=false; pvInfo.textContent='Aplicando cambios con IA...'; pvErr.hidden=true;
     try{
       const prompt = ($('#pv-prompt').value||'').trim(); if(!prompt) throw new Error('Escribe un prompt');
-      const data = await fetchJSON('/.netlify/functions/generate', { method:'POST', headers: buildOpenAIHeaders(), body: JSON.stringify({ mode:'edit', prompt, name: proj.name, files: proj.files }) });
-      if(!data.files) throw new Error('La función no devolvió archivos');
+      const r = await fetch('/.netlify/functions/generate', { method:'POST', headers: buildOpenAIHeaders(), body: JSON.stringify({ mode:'edit', prompt, name: proj.name, files: proj.files }) });
+      const data = await r.json(); if(!r.ok || !data.files) throw new Error(data.error||'La función no devolvió archivos');
       updateProjectFiles(proj.id, data.files); renderPreview(new URLSearchParams(`id=${encodeURIComponent(proj.id)}`)); pvInfo.textContent='Cambios aplicados (IA).';
     }catch(err){ pvInfo.hidden=true; pvErr.hidden=false; pvErr.textContent='Error: '+err.message; }
   };
