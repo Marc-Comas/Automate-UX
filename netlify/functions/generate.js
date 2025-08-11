@@ -1,41 +1,74 @@
 
-// netlify/functions/generate.js (CommonJS)
-
-export const handler = async (event) => {
-  if (event.httpMethod === 'OPTIONS') return { statusCode: 204, headers: corsHeaders(), body: '' };
+/**
+ * Netlify Function: generate (Assistants v2, robust, CommonJS)
+ * -----------------------------------------------------------
+ * - CORS seguro para uso desde el frontend de Project Central
+ * - Soporta credenciales desde variables de entorno o cabeceras:
+ *     OPENAI_API_KEY            | header: x-openai-key
+ *     OPENAI_ASSISTANT_ID       | header: x-openai-asst
+ *     OPENAI_ORG_ID (opcional)  | header: OpenAI-Organization / x-openai-org
+ *     OPENAI_PROJECT (opcional) | header: OpenAI-Project
+ * - Flujo start → poll → fetch messages (timeout 90s)
+ * - Fuerza response_format: { type: "json_object" } para que el Assistant devuelva JSON.
+ * - Si el Assistant responde con <html>…</html> en texto, convertimos a { files: { "index.html": ... } }
+ * - CommonJS (exports.handler) para evitar errores de `export` en el runtime de Netlify.
+ */
+exports.handler = async (event) => {
+  // Preflight CORS
+  if (event.httpMethod === "OPTIONS") return { statusCode: 204, headers: cors(), body: "" };
 
   try {
-    const body = JSON.parse(event.body || '{}');
-    const { mode = 'generate', prompt = '', name = 'sitio', files } = body;
+    const body = safeJSON(event.body);
+    const {
+      mode = "generate",            // "generate" | "edit"
+      prompt = "",                  // brief o modificación
+      name = "sitio",               // nombre del proyecto
+      files = undefined             // { "index.html": "...", ... } (solo en modo edit)
+    } = body || {};
 
-    // === CREDENCIALES ===
-    const key = process.env.OPENAI_API_KEY || event.headers['x-openai-key'] || event.headers['X-OpenAI-Key'];
-    const asst = process.env.OPENAI_ASSISTANT_ID || event.headers['x-openai-asst'] || event.headers['X-OpenAI-Asst'];
-    if (!key || !asst) return jsonResp(400, { error: 'Faltan credenciales de OpenAI (OPENAI_API_KEY y OPENAI_ASSISTANT_ID).' });
+    // ---- Credenciales ----
+    const key  = process.env.OPENAI_API_KEY
+              || event.headers["x-openai-key"]
+              || event.headers["X-OpenAI-Key"];
 
-    // Opcionales (útiles con claves sk-proj-...):
-    const org = process.env.OPENAI_ORG_ID;
-    const project = process.env.OPENAI_PROJECT || process.env.OPENAI_PROJECT_ID;
+    const asst = process.env.OPENAI_ASSISTANT_ID
+              || event.headers["x-openai-asst"]
+              || event.headers["X-OpenAI-Asst"];
 
-    // === HEADERS V2 (OBLIGATORIO EL BETA) ===
-    const h = {
-      'Authorization': `Bearer ${key}`,
-      'Content-Type': 'application/json',
-      'OpenAI-Beta': 'assistants=v2'
+    const org  = process.env.OPENAI_ORG_ID
+              || process.env.OPENAI_ORGANIZATION
+              || event.headers["openai-organization"]
+              || event.headers["OpenAI-Organization"]
+              || event.headers["x-openai-org"]
+              || event.headers["X-OpenAI-Org"]
+              || undefined;
+
+    const project = process.env.OPENAI_PROJECT
+                 || process.env.OPENAI_PROJECT_ID
+                 || event.headers["openai-project"]
+                 || event.headers["OpenAI-Project"]
+                 || undefined;
+
+    if (!key || !asst) {
+      return j(400, { error: "Faltan credenciales de OpenAI (OPENAI_API_KEY y OPENAI_ASSISTANT_ID)." });
+    }
+
+    // ---- Cabeceras para Assistants v2 ----
+    const headers = {
+      "Authorization": `Bearer ${key}`,
+      "Content-Type": "application/json",
+      "OpenAI-Beta": "assistants=v2"
     };
-    if (org) h['OpenAI-Organization'] = org;
-    if (project) h['OpenAI-Project'] = project;
+    if (org) headers["OpenAI-Organization"] = org;
+    if (project) headers["OpenAI-Project"] = project;
 
-    // === CONTENIDO DEL MENSAJE (SOLO ROLE: "user") ===
-    // En v2, no uses role "system" en los mensajes del thread.
-    // Las reglas de salida mejor dejarlas en las instrucciones del Assistant; si
-    // quieres forzarlas aquí, las anteponemos al brief en el mensaje user.
+    // ---- Reglas de salida (refuerzan el esquema esperado) ----
     const rules = `RESPETA EL FORMATO DE SALIDA.
-
 STEP 4 – CODE GENERATION (Single HTML file)
 - Semantic HTML5 con <header>, <nav>, <main>, <section>, <footer>
-- CSS en <style> con --color-primary, --color-bg, --font-heading, --font-body
-- JS vanilla en <script>; responsive + accesible (WCAG AA); sin CDNs
+- CSS en <style> con variables --color-primary, --color-bg, --font-heading, --font-body
+- JS vanilla en <script>
+- Responsive y accesible (WCAG AA), sin CDNs
 - SPA hash routing si procede
 STEP 5 – OUTPUT FORMAT (SOLO JSON)
 {
@@ -46,201 +79,125 @@ STEP 5 – OUTPUT FORMAT (SOLO JSON)
   }
 }`;
 
-    const userBrief =
-      mode === 'edit' && files && typeof files === 'object'
-        ? `Modifica el proyecto según el prompt.\nPROMPT:\n${prompt}\n\nFILES (JSON):\n${JSON.stringify({ files })}`
-        : `Genera una landing para: ${name}\nPROMPT:\n${prompt || 'Genera landing base responsive.'}`;
+    // ---- Mensaje de usuario (único, rol "user" recomendado en v2) ----
+    const userBrief = (mode === "edit" && files && typeof files === "object")
+      ? `Modifica el proyecto según el prompt.\nPROMPT:\n${prompt}\n\nFILES (JSON):\n${JSON.stringify({ files })}`
+      : `Genera una landing para: ${name}\nPROMPT:\n${prompt || "Genera landing base responsive."}`;
 
     const userMessage = `${rules}\n\n${userBrief}`;
 
-    // === 1) CREAR THREAD VACÍO ===
-    const thrRes = await fetch('https://api.openai.com/v1/threads', {
-      method: 'POST',
-      headers: h,
+    // ---- 1) Crear thread vacío ----
+    const thread = await fetchJSON("https://api.openai.com/v1/threads", {
+      method: "POST",
+      headers,
       body: JSON.stringify({})
     });
-    const thread = await thrRes.json();
-    if (!thrRes.ok || !thread.id) {
-      return jsonResp(thrRes.status || 502, { error: 'No se pudo crear el thread', details: thread });
-    }
+    if (!thread || !thread.id) return j(502, { error: "No se pudo crear el thread", details: thread });
 
-    // === 2) AÑADIR MENSAJE USER ===
-    const msgRes = await fetch(`https://api.openai.com/v1/threads/${thread.id}/messages`, {
-      method: 'POST',
-      headers: h,
-      body: JSON.stringify({ role: 'user', content: userMessage })
+    // ---- 2) Publicar mensaje del usuario ----
+    await fetchJSON(`https://api.openai.com/v1/threads/${thread.id}/messages`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ role: "user", content: userMessage })
     });
-    const msgJson = await msgRes.json();
-    if (!msgRes.ok) {
-      return jsonResp(msgRes.status || 502, { error: 'No se pudo añadir el mensaje al thread', details: msgJson });
-    }
 
-    // === 3) CREAR RUN ===
-    const runRes = await fetch(`https://api.openai.com/v1/threads/${thread.id}/runs`, {
-  method: 'POST',
-  headers: h,
-  body: JSON.stringify({
-    assistant_id: asst,
-    response_format: { type: 'json_object' } // <- fuerza JSON válido
-  })
-});
-
-
-    // === 4) POLL DE ESTADO ===
-    const deadline = Date.now() + 90000;
-    let status = run.status, snap = run;
-    while (status === 'queued' || status === 'in_progress' || status === 'requires_action') {
-      if (Date.now() > deadline) return jsonResp(504, { error: 'Timeout esperando al Assistant' });
-      await sleep(1200);
-      const rs = await fetch(`https://api.openai.com/v1/threads/${thread.id}/runs/${run.id}`, { headers: h });
-      snap = await rs.json();
-      status = snap.status;
-    }
-    if (status !== 'completed') {
-      return jsonResp(502, { error: 'Run no completado', details: snap });
-    }
-
-    // === 5) LEER MENSAJES Y EXTRAER TEXTO ===
-    const msgsRes = await fetch(`https://api.openai.com/v1/threads/${thread.id}/messages`, { headers: h });
-    const msgs = await msgsRes.json();
-    const txt = extractText(msgs);
-    const raw = txt.trim();
-    let payload;
-    try {
-  // intenta parsear tal cual; si viniera con ```json ... ``` tu regex actual ya lo limpia
-  const clean = raw.replace(/```json\s*([\s\S]*?)\s*```/i, '$1').trim();
-  payload = JSON.parse(clean);
-} catch {
-  return jsonResp(502, { error: 'Respuesta no es JSON válido', raw });
-}
-
-// acepta { files: {...} } o directamente { "index.html": ... }
-const maybeFiles = payload.files || payload;
-if (!maybeFiles || typeof maybeFiles !== 'object' || !maybeFiles['index.html']) {
-  return jsonResp(502, { error: 'JSON sin files.index.html', payload });
-}
-return jsonResp(200, { files: maybeFiles });
-
-
-    // === 6) PARSEAR JSON DE ARCHIVOS ===
-    let payload;
-    try {
-      const clean = txt.replace(/```json\\s*([\\s\\S]*?)\\s*```/gi, '$1').trim();
-      payload = JSON.parse(clean);
-    } catch (e) {
-      return jsonResp(502, { error: 'Respuesta no es JSON válido', raw: txt });
-    }
-    if (!payload.files || !payload.files['index.html']) {
-      return jsonResp(502, { error: 'JSON sin files.index.html', payload });
-    }
-
-    return jsonResp(200, payload);
-
-  } catch (err) {
-    return jsonResp(500, { error: 'Fallo interno', details: err.message || String(err) });
-  }
-};
-
-function corsHeaders(){ return {'Access-Control-Allow-Origin':'*','Access-Control-Allow-Methods':'POST,OPTIONS','Access-Control-Allow-Headers':'Content-Type,x-openai-key,x-openai-asst'}; }
-function jsonResp(code,obj){ return { statusCode: code, headers: { ...corsHeaders(), 'Content-Type':'application/json' }, body: JSON.stringify(obj) }; }
-function sleep(ms){ return new Promise(r=>setTimeout(r,ms)); }
-function extractText(msgs){
-  try{
-    const data = msgs.data || [];
-    for (let i = data.length - 1; i >= 0; i--) {
-      const m = data[i];
-      if (m.role === 'assistant' && Array.isArray(m.content)) {
-        for (const p of m.content) {
-          // v2 puede usar 'text' o 'output_text'
-          if ((p.type === 'text' || p.type === 'output_text') && p.text?.value) return p.text.value;
-        }
-      }
-    }
-    return null;
-  } catch { return null; }
-}
-
-
-
-
-    const messages = [{ role:'system', content: contextHeader }];
-    if (mode === 'edit' && files && typeof files === 'object'){
-      messages.push({ role:'user', content: `Modifica el proyecto según el prompt.\nPROMPT:\n${prompt}\n\nFILES (JSON):\n${JSON.stringify({ files })}` });
-    } else {
-      messages.push({ role:'user', content: `Genera una landing para: ${name}\nPROMPT:\n${prompt || 'Genera landing base responsive.'}` });
-    }
-
-    // 1) thread
-    const thread = await fetchJSON('https://api.openai.com/v1/threads', {
-      method:'POST', headers:oaiHeaders(key, org), body: JSON.stringify({ messages })
-    });
-    if (!thread?.id) return j(502, { error:'No se pudo crear el thread', details: thread });
-
-    // 2) run
+    // ---- 3) Lanzar run con response_format json_object ----
     const run = await fetchJSON(`https://api.openai.com/v1/threads/${thread.id}/runs`, {
-      method:'POST', headers:oaiHeaders(key, org), body: JSON.stringify({ assistant_id: asst })
+      method: "POST",
+      headers,
+      body: JSON.stringify({ assistant_id: asst, response_format: { type: "json_object" } })
     });
-    if (!run?.id) return j(502, { error:'No se pudo iniciar el run', details: run });
+    if (!run || !run.id) return j(502, { error: "No se pudo iniciar el run", details: run });
 
-    return j(200, { pending:true, thread_id: thread.id, run_id: run.id, status: run.status });
+    // ---- 4) Poll hasta completar (timeout 90s) ----
+    const deadline = Date.now() + 90_000;
+    let status = run.status;
+    let snap   = run;
 
+    while (status === "queued" || status === "in_progress" || status === "requires_action") {
+      if (Date.now() > deadline) return j(504, { error: "Timeout esperando al Assistant" });
+      await sleep(1200);
+      snap = await fetchJSON(`https://api.openai.com/v1/threads/${thread.id}/runs/${run.id}`, { headers });
+      status = snap && snap.status;
+    }
+    if (status !== "completed") return j(502, { error: "Run no completado", details: snap });
+
+    // ---- 5) Obtener mensajes y extraer payload ----
+    const msgs = await fetchJSON(`https://api.openai.com/v1/threads/${thread.id}/messages`, { headers });
+    const { payload, raw_text } = extractPayload(msgs);
+
+    if (payload && payload.files && typeof payload.files["index.html"] === "string") {
+      return j(200, payload);
+    }
+    return j(502, { error: "La función no devolvió archivos", raw_text: raw_text ? String(raw_text).slice(0, 500) : null });
   } catch (err) {
-    return j(500, { error:'Fallo interno', details: err?.message || String(err) });
+    return j(500, { error: "Fallo interno", details: err && err.message ? err.message : String(err) });
   }
 };
 
-function oaiHeaders(key, org){
-  const h = { 'Authorization':`Bearer ${key}`, 'Content-Type':'application/json', 'OpenAI-Beta':'assistants=v2' };
-  if (org) h['OpenAI-Organization'] = org;
-  return h;
-}
-function cors(){
+/* ========================
+   Helpers
+   ======================== */
+function cors() {
   return {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'POST,OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type,x-openai-key,x-openai-asst,OpenAI-Organization,OpenAI-Project',
-    'Access-Control-Max-Age': '600'
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "POST,OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type,x-openai-key,x-openai-asst,OpenAI-Organization,OpenAI-Project",
+    "Access-Control-Max-Age": "600"
   };
 }
-function j(code,obj){ return { statusCode:code, headers:{...cors(), 'Content-Type':'application/json'}, body: JSON.stringify(obj) }; }
-function safeJSON(s){ try{ return JSON.parse(s||'{}'); }catch{ return {}; } }
-async function fetchJSON(url, init={}){
-  const res = await fetch(url, init);
-  const text = await res.text();
-  try{ return JSON.parse(text); }catch{ return { _raw:text, status: res.status }; }
+function j(code, obj) {
+  return { statusCode: code, headers: { ...cors(), "Content-Type": "application/json" }, body: JSON.stringify(obj) };
 }
-function extractPayload(msgs){
-  try{
-    const data = msgs?.data || [];
-    for (let i = data.length - 1; i >= 0; i--){
+function safeJSON(s) { try { return JSON.parse(s || "{}"); } catch { return {}; } }
+async function fetchJSON(url, init = {}) {
+  const res = await fetch(url, init);
+  const txt = await res.text();
+  try { return JSON.parse(txt); } catch { return { _raw: txt, status: res.status }; }
+}
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+/**
+ * Extrae { files:{...} } desde los mensajes de Assistants v2.
+ * Soporta content parts tipo "output_text" y "text". Si no hay JSON válido,
+ * intenta capturar un bloque <html>…</html> como fallback.
+ */
+function extractPayload(msgs) {
+  try {
+    const data = (msgs && msgs.data) || [];
+    let rawText = null;
+
+    for (let i = data.length - 1; i >= 0; i--) {
       const m = data[i];
-      if (m.role === 'assistant' && Array.isArray(m.content)){
-        for (const p of m.content){
-          if (p.type === 'text' && p.text?.value){
-            const clean = p.text.value.replace(/```json\s*([\s\S]*?)\s*```/gi,'$1').trim();
-            try { return JSON.parse(clean); } catch {}
-            // alternativa: si el assistant devolvió HTML suelto, empaquetarlo
-            if (/<html[\s\S]*<\/html>/i.test(p.text.value)){
-              const html = p.text.value.match(/<html[\s\S]*<\/html>/i)[0];
-              return { files: { 'index.html': html } };
-            }
-          }
+      if (m.role !== "assistant" || !Array.isArray(m.content)) continue;
+
+      for (const p of m.content) {
+        let val = null;
+        if (p.type === "output_text" && p.text && typeof p.text.value === "string") {
+          val = p.text.value;
+        } else if (p.type === "text" && p.text && typeof p.text.value === "string") {
+          val = p.text.value;
+        }
+        if (!val) continue;
+
+        rawText = val;
+
+        // Intento 1: JSON puro (permite bloque ```json ... ```)
+        const clean = val.replace(/```json\s*([\s\S]*?)\s*```/gi, "$1").trim();
+        try {
+          const obj = JSON.parse(clean);
+          return { payload: obj, raw_text: rawText };
+        } catch {}
+
+        // Intento 2: HTML directo -> lo empaquetamos
+        const matchHtml = val.match(/<html[\s\S]*<\/html>/i);
+        if (matchHtml) {
+          return { payload: { files: { "index.html": matchHtml[0] } }, raw_text: rawText };
         }
       }
     }
-    return null;
-  }catch{ return null; }
-}
-function sampleText(msgs){
-  try{
-    const data = msgs?.data || [];
-    for (let i = data.length - 1; i >= 0; i--){
-      const m = data[i];
-      if (m.role === 'assistant'){
-        const t = m.content?.find(c=>c.type==='text')?.text?.value || '';
-        return t.slice(0,500);
-      }
-    }
-  }catch{}
-  return null;
+    return { payload: null, raw_text: rawText };
+  } catch {
+    return { payload: null, raw_text: null };
+  }
 }
