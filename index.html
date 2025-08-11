@@ -488,7 +488,6 @@ function wireNewForm(){
     const slug=slugify(name); const id=uuid();
     let files;
     try{
-      const r=await fetch('/.netlify/functions/generate',{method:'POST',headers:buildOpenAIHeaders(),body:JSON.stringify({prompt,name})});
       const data = await postJSON('/.netlify/functions/generate', { prompt, name }); if(!r.ok) throw new Error(data.error||'Error de generación'); files = data.files;
     }catch(err){
       files = generateSite({name,prompt}).files;
@@ -512,19 +511,13 @@ function renderPreview(params){
   iframe.src = URL.createObjectURL(new Blob([html],{type:'text/html'}));
   $('#pv-download').onclick=()=>{ const blob=makeZip(proj.files||{}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`${proj.name}.zip`; a.click(); URL.revokeObjectURL(a.href); };
   $('#pv-apply-ai').onclick = async ()=>{
-  pvInfo.hidden=false; pvInfo.textContent='Aplicando cambios con IA...'; pvErr.hidden=true;
-  try{
-    const prompt = ($('#pv-prompt').value||'').trim(); if(!prompt) throw new Error('Escribe un prompt');
-    const data = await postJSON('/.netlify/functions/generate', {
-      mode:'edit', prompt, name: proj.name, files: proj.files
-    });
-    if(!data.files) throw new Error('La función no devolvió archivos');
-    updateProjectFiles(proj.id, data.files);
-    renderPreview(new URLSearchParams(`id=${encodeURIComponent(proj.id)}`));
-    pvInfo.textContent='Cambios aplicados (IA).';
-  }catch(err){ pvInfo.hidden=true; pvErr.hidden=false; pvErr.textContent='Error: '+err.message; }
-};
-
+    pvInfo.hidden=false; pvInfo.textContent='Aplicando cambios con IA...'; pvErr.hidden=true;
+    try{
+      const prompt = ($('#pv-prompt').value||'').trim(); if(!prompt) throw new Error('Escribe un prompt');
+      const data = await postJSON('/.netlify/functions/generate', { mode:'edit', prompt, name: proj.name, files: proj.files }); if(!r.ok || !data.files) throw new Error((data.error || 'La función no devolvió archivos') + (data.raw_text ? (': ' + String(data.raw_text).slice(0,160)) : ''));
+      updateProjectFiles(proj.id, data.files); renderPreview(new URLSearchParams(`id=${encodeURIComponent(proj.id)}`)); pvInfo.textContent='Cambios aplicados (IA).';
+    }catch(err){ pvInfo.hidden=true; pvErr.hidden=false; pvErr.textContent='Error: '+err.message; }
+  };
   $('#pv-apply-local').onclick = ()=>{
     const txt = ($('#pv-prompt').value||'').trim();
     const updated = localEdit(proj.files||{}, txt);
