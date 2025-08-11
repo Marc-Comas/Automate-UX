@@ -195,13 +195,6 @@ function extractPayload(msgs) {
           return { payload: { files: { "index.html": matchHtml[0] } }, raw_text: rawText };
         }
 
-        // Sustituye tu regex actual por una más amplia
-        let clean = val.trim();
-
-        // Quitar bloques con ```json ... ``` o ``` ... ```
-        clean = clean.replace(/```json\s*([\s\S]*?)\s*```/gi, '$1').trim();
-        clean = clean.replace(/```\s*([\s\S]*?)\s*```/g, '$1').trim();
-
       }
     }
     return { payload: null, raw_text: rawText };
