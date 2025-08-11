@@ -216,14 +216,7 @@ STEP 5 – OUTPUT FORMAT (SOLO JSON):
 
 /* ===================== Helpers ===================== */
 
-function corsHeaders() {
-  return {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'POST,OPTIONS',
-    'Access-Control-Allow-Headers':
-      'Content-Type,x-openai-key,x-openai-asst',
-    'Access-Control-Max-Age': '600',
-  };
+function corsHeaders(){ return {'Access-Control-Allow-Origin':'*','Access-Control-Allow-Methods':'POST,OPTIONS','Access-Control-Allow-Headers':'Content-Type,x-openai-key,x-openai-asst,OpenAI-Organization,OpenAI-Project','Access-Control-Max-Age':'600'}; };
 }
 
 function jsonResp(code, obj) {
