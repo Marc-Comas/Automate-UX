@@ -1,88 +1,69 @@
 // netlify/functions/projects-list.js
-
-const GITHUB_API = 'https://api.github.com';
-
-function json(code, obj) {
-  return {
-    statusCode: code,
-    headers: {
-      'Content-Type': 'application/json',
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET,OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type',
-    },
-    body: JSON.stringify(obj),
-  };
-}
-
-exports.handler = async (event) => {
-  // CORS preflight
-  if (event.httpMethod === 'OPTIONS') {
-    return {
-      statusCode: 204,
-      headers: {
-        'Access-Control-Allow-Origin': '*',
-        'Access-Control-Allow-Methods': 'GET,OPTIONS',
-        'Access-Control-Allow-Headers': 'Content-Type',
-      },
-      body: '',
-    };
-  }
-  if (event.httpMethod !== 'GET') return json(405, { error: 'method_not_allowed' });
-
-  const token  = process.env.GITHUB_TOKEN;
-  const owner  = process.env.GH_DATA_OWNER;
-  const repo   = process.env.GH_DATA_REPO;
-  const branch = process.env.GH_DATA_BRANCH || 'main';
-
-  if (!token || !owner || !repo) {
-    return json(400, { error: 'env_missing', details: 'Falten GITHUB_TOKEN, GH_DATA_OWNER o GH_DATA_REPO' });
-  }
-
-  const headers = {
-  'Authorization': `token ${token}`,  
-  'Accept': 'application/vnd.github+json',
-  'User-Agent': 'project-central-list'
-};
-
-
+export const handler = async (event) => {
   try {
-    // Llista el directori arrel on desem els projectes
-    const url = `${GITHUB_API}/repos/${owner}/${repo}/contents/${encodeURIComponent('projects')}?ref=${encodeURIComponent(branch)}`;
-    const res = await fetch(url, { headers });
+    const token  = (process.env.GITHUB_TOKEN || '').trim();
+    const owner  = (process.env.GH_DATA_OWNER || process.env.GH_OWNER || '').trim();
+    const repo   = (process.env.GH_DATA_REPO  || process.env.GH_REPO  || '').trim();
+    const branch = (process.env.GH_DATA_BRANCH || process.env.GH_BRANCH || 'main').trim();
 
-    if (res.status === 404) return json(200, { ok: true, projects: [] }); // encara no hi ha cap projecte
-    if (!res.ok) {
-      const t = await res.text().catch(() => '');
-      return json(res.status, { error: 'github_error', details: t || res.statusText });
-    }
-
-    const listing = await res.json(); // array d'items
-    const dirs = (Array.isArray(listing) ? listing : []).filter(x => x && x.type === 'dir');
-
-    // Opcional: comprovar si hi ha index.html a cada projecte
-    const projects = [];
-    for (const d of dirs) {
-      const id = d.name;
-      // no ens cal fallar si no hi ha index, només informem
-      let hasIndex = false;
-      try {
-        const iurl = `${GITHUB_API}/repos/${owner}/${repo}/contents/${encodeURIComponent(`projects/${id}/index.html`)}?ref=${encodeURIComponent(branch)}`;
-        const ires = await fetch(iurl, { headers });
-        hasIndex = ires.status === 200;
-      } catch { /* ignore */ }
-
-      projects.push({
-        id,
-        name: id,            // si en un futur hi ha meta.json, el podem llegir aquí
-        hasIndex,
-        path: `projects/${id}/`,
+    // DEBUG: comprovar variables sense exposar el token
+    if (event.queryStringParameters?.debug === '1') {
+      return json(200, {
+        ok: true,
+        hasToken: Boolean(token),
+        owner, repo, branch
       });
     }
 
+    if (!token || !owner || !repo) {
+      return json(400, { error: 'config_error', details: 'Falten GITHUB_TOKEN / OWNER / REPO' });
+    }
+
+    const url = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/projects?ref=${encodeURIComponent(branch)}`;
+    const res = await fetch(url, {
+      headers: {
+        'Authorization': `token ${token}`,            // <- clau
+        'Accept': 'application/vnd.github+json',
+        'User-Agent': 'project-central-list'
+      }
+    });
+
+    // Si no existeix la carpeta "projects", tornem llista buida (no és un error greu)
+    if (res.status === 404) return json(200, { ok: true, projects: [] });
+
+    if (!res.ok) {
+      const err = await safeJson(res);
+      return json(res.status, { error: 'github_error', details: err || res.statusText });
+    }
+
+    const items = await res.json(); // array de fitxers/directoris
+    const projects = (Array.isArray(items) ? items : [])
+      .filter(i => i && (i.type === 'file' || i.type === 'dir'))
+      .map(i => ({
+        name: i.name.replace(/\.json$/,''),
+        path: i.path,
+        type: i.type,
+        size: i.size ?? null
+      }));
+
     return json(200, { ok: true, projects });
-  } catch (err) {
-    return json(500, { error: 'server_error', details: err.message });
+  } catch (e) {
+    return json(500, { error: 'internal_error', details: e.message || String(e) });
   }
 };
 
+function json(code, obj){
+  return {
+    statusCode: code,
+    headers: {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET,OPTIONS',
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(obj)
+  };
+}
+
+async function safeJson(res){
+  try { return await res.json(); } catch { return null; }
+}
