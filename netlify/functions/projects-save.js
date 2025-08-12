@@ -1,96 +1,152 @@
+// netlify/functions/projects-save.js  (CommonJS, Netlify-friendly)
+
+const GITHUB_API = 'https://api.github.com';
+
+function json(code, obj) {
+  return {
+    statusCode: code,
+    headers: {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'POST,OPTIONS',
+      'Access-Control-Allow-Headers': 'Content-Type',
+    },
+    body: JSON.stringify(obj),
+  };
+}
+
+function corsPreflight(event) {
+  if (event.httpMethod === 'OPTIONS') {
+    return {
+      statusCode: 204,
+      headers: {
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Methods': 'POST,OPTIONS',
+        'Access-Control-Allow-Headers': 'Content-Type',
+      },
+      body: '',
+    };
+  }
+  return null;
+}
+
+function ghHeaders(token) {
   return {
     'Authorization': `Bearer ${token}`,
-    'Content-Type': 'application/json',
     'Accept': 'application/vnd.github+json',
-    'User-Agent': 'project-central-cloud'
+    'Content-Type': 'application/json',
+    'User-Agent': 'project-central-migrator',
   };
 }
-async function ghGet(path) {
-  const url = `https://api.github.com/repos/${dataOwner()}/${dataRepo()}/contents/${encodeURIComponent(path)}?ref=${encodeURIComponent(dataBranch())}`;
-  const res = await fetch(url, { headers: ghHeaders() });
-  if (res.status === 404) return { status: 404, data: null };
-  const data = await res.json();
-  return { status: res.status, data };
+
+async function ghGetFileSha({ owner, repo, branch, path, token }) {
+  const url = `${GITHUB_API}/repos/${owner}/${repo}/contents/${encodeURIComponent(path)}?ref=${encodeURIComponent(branch)}`;
+  const res = await fetch(url, { headers: ghHeaders(token) });
+  if (res.status === 200) {
+    const data = await res.json();
+    return data.sha || null;
+  }
+  // 404 = no existeix; la resta retornem null i ja provarem PUT sense sha
+  return null;
 }
-async function ghPut(path, contentStr, message, sha) {
-  const url = `https://api.github.com/repos/${dataOwner()}/${dataRepo()}/contents/${encodeURIComponent(path)}`;
-  const b64 = Buffer.from(contentStr, 'utf-8').toString('base64');
-  const body = { message, content: b64, branch: dataBranch() };
-  if (sha) body.sha = sha;
-  const res = await fetch(url, { method: 'PUT', headers: ghHeaders(), body: JSON.stringify(body) });
-  const data = await res.json();
-  return { status: res.status, data };
-}
-async function ghDelete(path, message, sha) {
-  const url = `https://api.github.com/repos/${dataOwner()}/${dataRepo()}/contents/${encodeURIComponent(path)}`;
-  const body = { message, sha, branch: dataBranch() };
-  const res = await fetch(url, { method: 'DELETE', headers: ghHeaders(), body: JSON.stringify(body) });
-  const data = await res.json().catch(()=> ({}));
-  return { status: res.status, data };
-}
-function decodeContent(obj) {
-  if (!obj || !obj.content) return null;
-  try { return Buffer.from(obj.content, 'base64').toString('utf-8'); } catch { return null; }
-}
-function now(){ return Date.now(); }
-function ensureProjectMeta(p){
-  // Keep only safe metadata fields for index
-  return {
-    id: p.id, name: p.name, slug: p.slug, desc: p.desc || '',
-    status: p.status || 'local', repo: p.repo || null, netlifyUrl: p.netlifyUrl || null,
-    updatedAt: p.updatedAt || now(), createdAt: p.createdAt || now()
+
+async function ghPutFile({ owner, repo, branch, path, contentStr, token, message }) {
+  const existingSha = await ghGetFileSha({ owner, repo, branch, path, token });
+  const url = `${GITHUB_API}/repos/${owner}/${repo}/contents/${encodeURIComponent(path)}`;
+  const body = {
+    message,
+    content: Buffer.from(contentStr, 'utf-8').toString('base64'),
+    branch,
   };
+  if (existingSha) body.sha = existingSha;
+
+  const res = await fetch(url, {
+    method: 'PUT',
+    headers: ghHeaders(token),
+    body: JSON.stringify(body),
+  });
+  const out = await res.json();
+  if (res.status >= 400) {
+    throw new Error(`GitHub PUT failed (${res.status}): ${out.message || 'unknown error'}`);
+  }
+  return { path, sha: out.content && out.content.sha };
+}
+
+function normalizeInput(body) {
+  // Accepta { project } o { projects: [...] }
+  if (body && body.project) return [body.project];
+  if (body && Array.isArray(body.projects)) return body.projects;
+  // Compatibilitat: { id, name, files, ... }
+  if (body && body.id && body.files) return [body];
+  return [];
 }
 
 exports.handler = async (event) => {
-  if (event.httpMethod === 'OPTIONS') return { statusCode: 204, headers: cors(), body: '' };
+  // CORS preflight
+  const pre = corsPreflight(event);
+  if (pre) return pre;
+
   try {
-    if (event.httpMethod !== 'POST') return bad('Use POST');
-    const body = JSON.parse(event.body || '{}');
-    const project = body.project || {};
-    const files = body.files || {};
+    // 1) ENV requerides
+    const token = process.env.GITHUB_TOKEN;
+    const owner = process.env.GH_DATA_OWNER;
+    const repo = process.env.GH_DATA_REPO;
+    const branch = process.env.GH_DATA_BRANCH || 'main';
 
-    if (!project.id) return bad('project.id requerido');
-    if (!files || typeof files !== 'object') return bad('files inválido');
-
-    project.updatedAt = now();
-    project.createdAt = project.createdAt || now();
-
-    const metaPath  = `pcentral/projects/${project.id}/meta.json`;
-    const filesPath = `pcentral/projects/${project.id}/files.json`;
-    const idxPath   = 'pcentral/projects.json';
-
-    // 1) Escribir files.json
-    const curFiles = await ghGet(filesPath);
-    const putFiles = await ghPut(filesPath, JSON.stringify(files, null, 2), `feat(${project.id}): update files.json`, curFiles.status === 404 ? undefined : curFiles.data.sha);
-    if (putFiles.status >= 400) return json(putFiles.status, { error: 'github_put_files_error', details: putFiles.data });
-
-    // 2) Escribir meta.json
-    const curMeta = await ghGet(metaPath);
-    const putMeta = await ghPut(metaPath, JSON.stringify(project, null, 2), `feat(${project.id}): update meta.json`, curMeta.status === 404 ? undefined : curMeta.data.sha);
-    if (putMeta.status >= 400) return json(putMeta.status, { error: 'github_put_meta_error', details: putMeta.data });
-
-    // 3) Actualizar projects.json (índex)
-    const curIdx = await ghGet(idxPath);
-    let indexArr = [];
-    let idxSha = undefined;
-    if (curIdx.status === 404) {
-      indexArr = [];
-    } else if (curIdx.status < 400) {
-      idxSha = curIdx.data.sha;
-      try { indexArr = JSON.parse(decodeContent(curIdx.data) || '[]'); } catch { indexArr = []; }
-    } else {
-      return json(curIdx.status, { error: 'github_get_index_error', details: curIdx.data });
+    if (!token || !owner || !repo) {
+      return json(400, {
+        error: 'env_missing',
+        details: 'Falten GITHUB_TOKEN, GH_DATA_OWNER o GH_DATA_REPO',
+      });
     }
 
-    const metaMin = ensureProjectMeta(project);
-    const map = new Map(indexArr.map(p => [p.id, p]));
-    map.set(project.id, { ...(map.get(project.id) || {}), ...metaMin });
+    // 2) Body
+    if (!event.body) return json(400, { error: 'payload_missing' });
+    let payload;
+    try {
+      payload = JSON.parse(event.body);
+    } catch (e) {
+      return json(400, { error: 'invalid_json', details: e.message });
+    }
 
-    const nextArr = Array.from(map.values()).sort((a,b)=> (b.updatedAt||0)-(a.updatedAt||0));
-    const putIdx = await ghPut(idxPath, JSON.stringify(nextArr, null, 2), `chore: upsert index for ${project.id}`, idxSha);
-    if (putIdx.status >= 400) return json(putIdx.status, { error: 'github_put_index_error', details: putIdx.data });
+    const projects = normalizeInput(payload);
+    if (!projects.length) {
+      return json(400, { error: 'no_projects', details: 'No s’han trobat projectes al payload' });
+    }
 
-    return ok({ ok: true, id: project.id });
-  } catch (err) { return server(err); }
+    // 3) Desa cada projecte en /projects/{id}/...
+    const results = [];
+    for (const p of projects) {
+      const pid = p.id || `p-${Date.now()}`;
+      const pname = p.name || 'project';
+      const files = p.files || {};
+      if (!Object.keys(files).length) {
+        results.push({ id: pid, name: pname, skipped: true, reason: 'empty_files' });
+        continue;
+      }
+
+      const root = `projects/${pid}`;
+      const commits = [];
+
+      for (const [relPath, contentStr] of Object.entries(files)) {
+        const path = `${root}/${relPath}`;
+        const message = `migrate(${pid}): ${pname} — update ${relPath}`;
+        try {
+          const r = await ghPutFile({ owner, repo, branch, path, contentStr, token, message });
+          commits.push(r);
+        } catch (err) {
+          // Si un fitxer falla, capturem però seguim amb la resta
+          commits.push({ path, error: err.message });
+        }
+      }
+
+      results.push({ id: pid, name: pname, committed: commits });
+    }
+
+    return json(200, { ok: true, results });
+
+  } catch (err) {
+    return json(500, { error: 'server_error', details: err.message });
+  }
 };
+
