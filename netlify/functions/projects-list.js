@@ -40,10 +40,11 @@ exports.handler = async (event) => {
   }
 
   const headers = {
-    'Authorization': `Bearer ${token}`,
-    'Accept': 'application/vnd.github+json',
-    'User-Agent': 'project-central-list',
-  };
+  'Authorization': `token ${token}`,  
+  'Accept': 'application/vnd.github+json',
+  'User-Agent': 'project-central-list'
+};
+
 
   try {
     // Llista el directori arrel on desem els projectes
