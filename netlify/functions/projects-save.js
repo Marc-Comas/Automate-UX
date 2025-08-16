@@ -1,195 +1,203 @@
 // Netlify Function: projects-save
-// Guarda proyectos (archivos) en un repositorio de datos de GitHub
-// Acepta varios formatos de entrada:
-// 1) { project, files }
-// 2) { project: { ..., files } }
-// 3) { projects: [{ ..., files }, ...] }
-// Escribe en: projects/<slug>/*
+// Goal: save a project's generated files to a GitHub repo (data repo)
+// Robust version: if direct push is blocked (branch protections),
+// it creates a new branch and opens a Pull Request.
+//
+// Env vars expected (set in Netlify):
+//   GH_TOKEN   - GitHub PAT (fine‑grained ok). Needs:
+//                Contents: Read & write, Pull requests: Read & write, Metadata: Read‑only
+//   GH_OWNER   - GitHub owner/user (e.g., "Marc-Comas")
+//   GH_REPO    - Data repo (e.g., "project-central-data")
+//   GH_BRANCH  - Base branch to merge into (default: "main")
+//   GH_COMMIT_MODE - optional: "pr" (default) or "direct"
+//
+// Request body JSON:
+//   { project: { id, name, slug }, files: { "index.html": "...", "styles/style.css": "...", "scripts/app.js": "..." } }
 
-export const handler = async (event) => {
-  // CORS preflight
+exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') {
-    return { statusCode: 204, headers: cors(), body: '' };
+    return { statusCode: 200, headers: corsHeaders(), body: '' };
   }
 
   try {
-    if (event.httpMethod === 'GET') {
-      // Diagnóstico sencillo
-      const cfg = getCfg();
-      return json(200, {
-        ok: true,
-        hasToken: !!cfg.token,
-        owner: cfg.owner,
-        repo: cfg.repo,
-        branch: cfg.branch,
+    const body = JSON.parse(event.body || '{}');
+    const { project, files } = body;
+
+    if (!project || !project.name) {
+      return json(400, { ok: false, error: 'Missing project {id,name,slug}.' });
+    }
+    if (!files || typeof files !== 'object' || Object.keys(files).length === 0) {
+      return json(400, { ok: false, error: 'Missing files: expected an object with at least index.html.' });
+    }
+
+    const token = process.env.GH_TOKEN || body.token;
+    const owner = process.env.GH_OWNER || body.owner;
+    const repo  = process.env.GH_REPO  || body.repo;
+    const baseBranch = process.env.GH_BRANCH || 'main';
+    const commitMode = (process.env.GH_COMMIT_MODE || 'pr').toLowerCase(); // 'pr' | 'direct'
+
+    if (!token || !owner || !repo) {
+      return json(400, { ok: false, error: 'Missing GH credentials (GH_TOKEN, GH_OWNER, GH_REPO).'});
+    }
+
+    const apiBase = 'https://api.github.com';
+
+    // 1) Resolve repo + base branch sha
+    const repoInfo = await gh(`${apiBase}/repos/${owner}/${repo}`, token);
+    if (!repoInfo.ok) return repoInfo;
+
+    const base = baseBranch || repoInfo.data.default_branch || 'main';
+    const refInfo = await gh(`${apiBase}/repos/${owner}/${repo}/git/ref/heads/${encodeURIComponent(base)}`, token);
+    if (!refInfo.ok) return refInfo;
+    const baseSha = refInfo.data.object.sha;
+
+    const slug = (project.slug || project.name || 'site')
+      .toString()
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9-]+/g, '-')
+      .replace(/^-+|-+$/g, '');
+
+    const targetDir = `projects/${slug}`;
+
+    // decide target branch
+    let workBranch = base;
+    let createdBranch = false;
+
+    if (commitMode !== 'direct') {
+      workBranch = `pc-${slug}-${Date.now().toString(36)}`;
+      const createRef = await gh(`${apiBase}/repos/${owner}/${repo}/git/refs`, token, {
+        method: 'POST',
+        body: {
+          ref: `refs/heads/${workBranch}`,
+          sha: baseSha,
+        },
       });
-    }
 
-    if (event.httpMethod !== 'POST') {
-      return json(405, { error: 'method_not_allowed' });
-    }
-
-    // --- Parse body ---
-    let body = {};
-    try {
-      body = JSON.parse(event.body || '{}');
-    } catch (e) {
-      return json(400, { error: 'invalid_json', details: String(e && e.message) });
-    }
-
-    // Normaliza a lista de proyectos
-    const projects = normalizeProjects(body);
-    if (!projects.length) {
-      return json(400, { error: 'no_projects', details: 'Se esperaba { project, files } o { projects: [...] }' });
-    }
-
-    // Config GitHub
-    const cfg = getCfg();
-    if (!cfg.token || !cfg.owner || !cfg.repo) {
-      return json(400, { error: 'github_config_missing', details: 'GITHUB_TOKEN, GH_DATA_OWNER, GH_DATA_REPO son requeridos' });
-    }
-
-    const results = [];
-    for (const p of projects) {
-      const slug = (p.slug && String(p.slug)) || slugify(p.name || 'site');
-      const files = pickFiles(p, body);
-
-      // Valida ficheros no vacíos
-      const entries = Object.entries(files)
-        .filter(([path, content]) => isValidPath(path) && typeof content === 'string' && content.trim().length > 0);
-
-      if (!entries.length) {
-        results.push({ id: p.id || slug, name: p.name || slug, skipped: true, reason: 'empty_files' });
-        continue;
-      }
-
-      const perProject = [];
-      for (const [relPath, content] of entries) {
-        const fullPath = `projects/${slug}/${relPath}`.replace(/\\/g, '/');
-        try {
-          const put = await githubPut(cfg, fullPath, content, p.id || slug, p.name || slug);
-          perProject.push({ path: fullPath, committed: true, sha: put.sha || null });
-        } catch (e) {
-          console.error('GitHub PUT fallo', { path: fullPath, error: e && e.message });
-          perProject.push({ path: fullPath, committed: false, error: String(e && e.message) });
+      // If branch already exists (rare on retries), append a suffix and try again
+      if (!createRef.ok) {
+        if (createRef.status === 422 && /Reference already exists/i.test(createRef.message || '')) {
+          workBranch = `${workBranch}-a`;
+          const retryRef = await gh(`${apiBase}/repos/${owner}/${repo}/git/refs`, token, {
+            method: 'POST',
+            body: { ref: `refs/heads/${workBranch}`, sha: baseSha },
+          });
+          if (!retryRef.ok) return retryRef;
+        } else {
+          return createRef;
         }
       }
-
-      results.push({ id: p.id || slug, name: p.name || slug, committed: perProject.every(x => x.committed), files: perProject });
+      createdBranch = true;
     }
 
-    return json(200, { ok: true, results });
+    // 2) Write files to repo (on workBranch)
+    const results = [];
+    for (const [relative, content] of Object.entries(files)) {
+      const path = `${targetDir}/${relative}`.replace(/\\/g, '/');
+      const putRes = await gh(`${apiBase}/repos/${owner}/${repo}/contents/${encodeURIComponent(path)}`, token, {
+        method: 'PUT',
+        body: {
+          message: `Project Central: save ${project.name} → ${path}`,
+          content: b64(content),
+          branch: workBranch,
+        },
+      });
+
+      results.push({ path, committed: putRes.ok, status: putRes.status, error: putRes.ok ? undefined : putRes.message });
+
+      // On 401/403, return a clear error immediately
+      if (!putRes.ok && (putRes.status === 401 || putRes.status === 403)) {
+        return json(200, {
+          ok: false,
+          reason: 'github_auth_or_permissions',
+          hint: hintFor403(commitMode),
+          owner,
+          repo,
+          branchTried: workBranch,
+          status: putRes.status,
+          message: putRes.message,
+          results,
+        });
+      }
+
+      if (!putRes.ok) return json(200, { ok: false, owner, repo, branchTried: workBranch, status: putRes.status, message: putRes.message, results });
+    }
+
+    // 3) If PR mode, open the PR
+    let pr = null;
+    if (commitMode !== 'direct') {
+      const prRes = await gh(`${apiBase}/repos/${owner}/${repo}/pulls`, token, {
+        method: 'POST',
+        body: {
+          title: `Project Central – ${project.name}`,
+          head: workBranch,
+          base: base,
+          body: `Automated save from Project Central for project **${project.name}** (id: ${project.id || 'n/a'}).\n\nFiles: ${Object.keys(files).map(f => `${targetDir}/${f}`).join(', ')}`,
+        },
+      });
+      if (!prRes.ok) return prRes;
+      pr = { number: prRes.data.number, url: prRes.data.html_url };
+    }
+
+    return json(200, {
+      ok: true,
+      mode: commitMode,
+      owner,
+      repo,
+      base,
+      branch: workBranch,
+      createdBranch,
+      pr,
+      results,
+    });
   } catch (err) {
-    console.error('projects-save fatal', err);
-    return json(500, { error: 'internal_error', details: String(err && err.message) });
+    return json(200, { ok: false, error: String(err && err.message || err) });
   }
 };
 
-// Helpers
-function cors() {
+// --- helpers ---------------------------------------------------------------
+function corsHeaders() {
   return {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'POST,OPTIONS,GET',
     'Access-Control-Allow-Headers': 'Content-Type',
+    'Content-Type': 'application/json'
   };
 }
+
 function json(statusCode, obj) {
-  return { statusCode, headers: { ...cors(), 'Content-Type': 'application/json' }, body: JSON.stringify(obj) };
+  return { statusCode, headers: corsHeaders(), body: JSON.stringify(obj) };
 }
 
-function getCfg() {
-  const token = process.env.GITHUB_TOKEN;
-  // Permite usar tanto GH_DATA_* como GH_*
-  const owner = process.env.GH_DATA_OWNER || process.env.GH_OWNER;
-  const repo = process.env.GH_DATA_REPO || process.env.GH_REPO;
-  const branch = process.env.GH_DATA_BRANCH || process.env.GH_BRANCH || 'main';
-  return { token, owner, repo, branch };
+function b64(str) {
+  return Buffer.from(String(str), 'utf8').toString('base64');
 }
 
-function normalizeProjects(body) {
-  const out = [];
-  if (body && typeof body === 'object') {
-    if (Array.isArray(body.projects)) {
-      for (const p of body.projects) if (p && typeof p === 'object') out.push(p);
-    } else if (body.project && typeof body.project === 'object') {
-      out.push(body.project);
-    }
-  }
-  return out;
-}
-
-function pickFiles(project, body) {
-  // Prioridad: project.files → body.files → {}
-  const files = (project && project.files) || body.files || {};
-  // Asegura estructura plana string→string
-  const clean = {};
-  if (files && typeof files === 'object') {
-    for (const [k, v] of Object.entries(files)) {
-      if (typeof v === 'string') clean[k] = v;
-    }
-  }
-  return clean;
-}
-
-function slugify(s) {
-  return String(s || '')
-    .toLowerCase()
-    .normalize('NFD').replace(/\p{Diacritic}+/gu, '')
-    .replace(/[^a-z0-9-]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 80) || 'site';
-}
-
-function isValidPath(path) {
-  if (typeof path !== 'string') return false;
-  if (path.includes('..')) return false; // evita traversals
-  if (path.startsWith('/')) return false;
-  return true;
-}
-
-async function githubPut(cfg, path, content, id, name) {
-  const api = `https://api.github.com/repos/${cfg.owner}/${cfg.repo}/contents/${encodeURIComponent(path)}`;
-
-  // Busca SHA si el fichero existe (para update idempotent)
-  let sha = undefined;
-  const getRes = await fetch(`${api}?ref=${encodeURIComponent(cfg.branch)}`, {
-    headers: ghHeaders(cfg.token),
-  });
-  if (getRes.status === 200) {
-    const info = await getRes.json();
-    if (info && info.sha) sha = info.sha;
-  }
-
-  const message = `feat(projects): save ${id || ''} ${name || ''} -> ${path}`.trim();
-  const putRes = await fetch(api, {
-    method: 'PUT',
-    headers: ghHeaders(cfg.token),
-    body: JSON.stringify({
-      message,
-      content: Buffer.from(content, 'utf8').toString('base64'),
-      branch: cfg.branch,
-      sha,
-    }),
+async function gh(url, token, init = {}) {
+  const res = await fetch(url, {
+    method: init.method || 'GET',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Accept': 'application/vnd.github+json',
+      'X-GitHub-Api-Version': '2022-11-28',
+      'Content-Type': 'application/json',
+    },
+    body: init.body ? JSON.stringify(init.body) : undefined,
   });
 
-  if (putRes.status >= 400) {
-    const err = await safeJson(putRes);
-    throw new Error(`GitHub PUT ${putRes.status}: ${JSON.stringify(err)}`);
-  }
+  const text = await res.text();
+  let data = null;
+  try { data = text ? JSON.parse(text) : null; } catch (_) { /* ignore */ }
 
-  const out = await putRes.json();
-  return { sha: out && out.content && out.content.sha };
+  const ok = res.status >= 200 && res.status < 300;
+  const message = ok ? undefined : (data && data.message) || text || `HTTP ${res.status}`;
+
+  return { ok, status: res.status, data, message };
 }
 
-function ghHeaders(token) {
-  return {
-    'Authorization': `Bearer ${token}`,
-    'Content-Type': 'application/json',
-    'Accept': 'application/vnd.github+json',
-    'User-Agent': 'project-central',
-  };
+function hintFor403(mode) {
+  return mode === 'direct'
+    ? 'Branch protections or "Restrict who can push" may be enabled on the target branch. Disable them or switch GH_COMMIT_MODE to "pr".'
+    : 'Your token must allow: Contents (Read & write) and Pull requests (Read & write). If it still fails, ensure the data repo is selected in the token and not restricted by organization policies.';
 }
 
-async function safeJson(res) {
-  try { return await res.json(); } catch { return await res.text(); }
-}
