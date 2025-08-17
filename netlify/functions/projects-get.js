@@ -28,8 +28,10 @@ function bad(msg){ return json(400, { error: msg }); }
 function server(err){ return json(500, { error: 'server_error', details: (err?.message || String(err)) }); }
 
 function ghHeaders() {
-  const token = env('GITHUB_TOKEN');
-  if (!token) throw new Error('Missing GITHUB_TOKEN');
+  const token =
+    process.env.GITHUB_DATA_TOKEN || process.env.GH_DATA_TOKEN ||
+    process.env.GITHUB_TOKEN      || process.env.GH_TOKEN;
+  if (!token) throw new Error('Missing GitHub token (DATA or fallback)');
   return {
     'Authorization': `Bearer ${token}`,
     'Content-Type': 'application/json',
@@ -37,6 +39,7 @@ function ghHeaders() {
     'User-Agent': 'project-central-cloud'
   };
 }
+
 async function ghGet(path) {
   const url = `https://api.github.com/repos/${dataOwner()}/${dataRepo()}/contents/${encodeURIComponent(path)}?ref=${encodeURIComponent(dataBranch())}`;
   const res = await fetch(url, { headers: ghHeaders() });
