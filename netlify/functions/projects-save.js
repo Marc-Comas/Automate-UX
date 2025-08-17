@@ -30,17 +30,23 @@ exports.handler = async (event) => {
       return json(400, { ok: false, error: 'Missing files: expected an object with at least index.html.' });
     }
 
-    const token = process.env.GH_TOKEN || body.token;
-    const owner = process.env.GH_OWNER || body.owner;
-    const repo  = process.env.GH_REPO  || body.repo;
-    const baseBranch = process.env.GH_BRANCH || 'main';
-    const commitMode = (process.env.GH_COMMIT_MODE || 'pr').toLowerCase(); // 'pr' | 'direct'
+   // ── substituir el bloc on es llegeixen token/owner/repo ──
+const pick = () => ({
+  TOKEN:  process.env.GITHUB_DATA_TOKEN || process.env.GH_DATA_TOKEN || process.env.GITHUB_TOKEN || process.env.GH_TOKEN,
+  OWNER:  process.env.GH_DATA_OWNER     || process.env.GITHUB_OWNER  || process.env.GH_OWNER,
+  REPO:   process.env.GH_DATA_REPO      || process.env.GITHUB_DATA_REPO || process.env.GITHUB_REPO || process.env.GH_REPO,
+  BRANCH: process.env.GH_DATA_BRANCH    || process.env.GITHUB_DATA_BRANCH || process.env.GH_BRANCH || 'main',
+  MODE:  (process.env.GH_COMMIT_MODE || 'pr').toLowerCase()
+});
 
-    if (!token || !owner || !repo) {
-      return json(400, { ok: false, error: 'Missing GH credentials (GH_TOKEN, GH_OWNER, GH_REPO).'});
-    }
+const { TOKEN, OWNER, REPO, BRANCH, MODE } = pick();
+if (!TOKEN || !OWNER || !REPO) {
+  return json(400, { ok:false, error:'Missing GH credentials (…DATA… or fallback tokens).' });
+}
+const apiBase = 'https://api.github.com';
+const commitMode = MODE;           // 'pr' | 'direct'
+const baseBranch = BRANCH;
 
-    const apiBase = 'https://api.github.com';
 
     // 1) Resolve repo + base branch sha
     const repoInfo = await gh(`${apiBase}/repos/${owner}/${repo}`, token);
