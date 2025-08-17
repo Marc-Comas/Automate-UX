@@ -1,126 +1,137 @@
+// netlify/functions/projects-delete.js
+// DELETE a GitHub (repo DATA) tot el directori projects/<slug>
+// Admet: POST amb { id } o { slug }  (també GET ?id= o ?slug= per proves)
 
-/**
- * POST /.netlify/functions/projects-delete
- * Body: { id: "..." }
- * - Elimina files.json i meta.json
- * - Treu entrada de pcentral/projects.json
- */
+const CORS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type,Authorization"
+};
 
-/** Shared helpers for GitHub Content API */
-function env(k, fallback) {
-  return process.env[k] || fallback || '';
+// Prioritza variables DATA; si no hi són, cau a les genèriques
+function envPick() {
+  const OWNER  = process.env.GH_DATA_OWNER   || process.env.GITHUB_OWNER || process.env.GH_OWNER;
+  const REPO   = process.env.GH_DATA_REPO    || process.env.GITHUB_DATA_REPO || process.env.GITHUB_REPO || process.env.GH_REPO;
+  const BRANCH = process.env.GH_DATA_BRANCH  || process.env.GITHUB_DATA_BRANCH || process.env.GH_BRANCH || "main";
+  const TOKEN  = process.env.GITHUB_DATA_TOKEN || process.env.GH_DATA_TOKEN || process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+  return { OWNER, REPO, BRANCH, TOKEN };
 }
-function dataOwner() { return env('GH_DATA_OWNER', env('GH_OWNER')); }
-function dataRepo()  { return env('GH_DATA_REPO',  env('GH_REPO')); }
-function dataBranch(){ return env('GH_DATA_BRANCH', env('GH_BRANCH', 'main')); }
 
-function cors() {
-  return {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
-    'Access-Control-Max-Age': '600'
-  };
+function json(status, payload) {
+  return { statusCode: status, headers: { ...CORS, "Content-Type": "application/json" }, body: JSON.stringify(payload) };
 }
-function json(code, obj) {
-  return { statusCode: code, headers: { ...cors(), 'Content-Type': 'application/json' }, body: JSON.stringify(obj) };
-}
-function ok(obj){ return json(200, obj); }
-function bad(msg){ return json(400, { error: msg }); }
-function server(err){ return json(500, { error: 'server_error', details: (err?.message || String(err)) }); }
+const ok  = (p) => json(200, p);
+const bad = (m) => json(400, { error: m || "bad_request" });
 
+// Headers GitHub (amb token si n’hi ha)
 function ghHeaders() {
-  const token = env('GITHUB_TOKEN');
-  if (!token) throw new Error('Missing GITHUB_TOKEN');
+  const { TOKEN } = envPick();
   return {
-    'Authorization': `Bearer ${token}`,
-    'Content-Type': 'application/json',
-    'Accept': 'application/vnd.github+json',
-    'User-Agent': 'project-central-cloud'
+    "Accept": "application/vnd.github+json",
+    "User-Agent": "project-central-functions",
+    ...(TOKEN ? { "Authorization": `token ${TOKEN}` } : {})
   };
 }
-async function ghGet(path) {
-  const url = `https://api.github.com/repos/${dataOwner()}/${dataRepo()}/contents/${encodeURIComponent(path)}?ref=${encodeURIComponent(dataBranch())}`;
-  const res = await fetch(url, { headers: ghHeaders() });
-  if (res.status === 404) return { status: 404, data: null };
-  const data = await res.json();
-  return { status: res.status, data };
+
+async function gh(path, { method = "GET", body } = {}) {
+  const res = await fetch(`https://api.github.com${path}`, {
+    method,
+    headers: ghHeaders(),
+    body: body ? JSON.stringify(body) : undefined
+  });
+  const text = await res.text();
+  let data;
+  try { data = text ? JSON.parse(text) : null; } catch { data = { raw: text }; }
+  return { ok: res.ok, status: res.status, data };
 }
-async function ghPut(path, contentStr, message, sha) {
-  const url = `https://api.github.com/repos/${dataOwner()}/${dataRepo()}/contents/${encodeURIComponent(path)}`;
-  const b64 = Buffer.from(contentStr, 'utf-8').toString('base64');
-  const body = { message, content: b64, branch: dataBranch() };
-  if (sha) body.sha = sha;
-  const res = await fetch(url, { method: 'PUT', headers: ghHeaders(), body: JSON.stringify(body) });
-  const data = await res.json();
-  return { status: res.status, data };
-}
-async function ghDelete(path, message, sha) {
-  const url = `https://api.github.com/repos/${dataOwner()}/${dataRepo()}/contents/${encodeURIComponent(path)}`;
-  const body = { message, sha, branch: dataBranch() };
-  const res = await fetch(url, { method: 'DELETE', headers: ghHeaders(), body: JSON.stringify(body) });
-  const data = await res.json().catch(()=> ({}));
-  return { status: res.status, data };
-}
-function decodeContent(obj) {
-  if (!obj || !obj.content) return null;
-  try { return Buffer.from(obj.content, 'base64').toString('utf-8'); } catch { return null; }
-}
-function now(){ return Date.now(); }
-function ensureProjectMeta(p){
-  // Keep only safe metadata fields for index
-  return {
-    id: p.id, name: p.name, slug: p.slug, desc: p.desc || '',
-    status: p.status || 'local', repo: p.repo || null, netlifyUrl: p.netlifyUrl || null,
-    updatedAt: p.updatedAt || now(), createdAt: p.createdAt || now()
-  };
+
+const ghList = (p, ref) => gh(`/repos/${envPick().OWNER}/${envPick().REPO}/contents/${encodeURIComponent(p)}?ref=${encodeURIComponent(ref)}`);
+const ghDeleteFile = (p, message, sha, branch) =>
+  gh(`/repos/${envPick().OWNER}/${envPick().REPO}/contents/${encodeURIComponent(p)}`, {
+    method: "DELETE",
+    body: { message, sha, branch }
+  });
+
+// Llista recursivament tots els fitxers sota un path (ignora directoris)
+async function listRecursive(base, branch) {
+  const out = [];
+  const stack = [base];
+
+  while (stack.length) {
+    const cur = stack.pop();
+    const res = await ghList(cur, branch);
+
+    // Si el path no existeix -> 404
+    if (res.status === 404) continue;
+    if (!res.ok || !Array.isArray(res.data)) {
+      throw new Error(`github_list_error@${cur}`);
+    }
+
+    for (const it of res.data) {
+      if (it.type === "file") {
+        out.push({ path: it.path, sha: it.sha });
+      } else if (it.type === "dir") {
+        stack.push(it.path);
+      }
+    }
+  }
+
+  return out;
 }
 
 exports.handler = async (event) => {
-  if (event.httpMethod === 'OPTIONS') return { statusCode: 204, headers: cors(), body: '' };
+  if (event.httpMethod === "OPTIONS") return { statusCode: 200, headers: CORS, body: "" };
+
   try {
-    if (event.httpMethod !== 'POST') return bad('Use POST');
-    const body = JSON.parse(event.body || '{}');
-    const id = body.id;
-    if (!id) return bad('id requerido');
-
-    const metaPath  = `pcentral/projects/${id}/meta.json`;
-    const filesPath = `pcentral/projects/${id}/files.json`;
-    const idxPath   = 'pcentral/projects.json';
-
-    // 1) Borrar files.json (si existeix)
-    const curFiles = await ghGet(filesPath);
-    if (curFiles.status < 400) {
-      const delFiles = await ghDelete(filesPath, `chore(${id}): delete files.json`, curFiles.data.sha);
-      if (delFiles.status >= 400) return json(delFiles.status, { error: 'github_delete_files_error', details: delFiles.data });
+    if (event.httpMethod !== "POST" && event.httpMethod !== "GET") {
+      return json(405, { error: "use POST (or GET per proves)" });
     }
 
-    // 2) Borrar meta.json (si existeix)
-    const curMeta = await ghGet(metaPath);
-    if (curMeta.status < 400) {
-      const delMeta = await ghDelete(metaPath, `chore(${id}): delete meta.json`, curMeta.data.sha);
-      if (delMeta.status >= 400) return json(delMeta.status, { error: 'github_delete_meta_error', details: delMeta.data });
+    const { OWNER, REPO, BRANCH, TOKEN } = envPick();
+    if (!OWNER || !REPO || !TOKEN) {
+      return json(400, { error: "missing_github_env", details: { OWNER, REPO, hasToken: !!TOKEN } });
     }
 
-    // 3) Actualitzar índex
-    const curIdx = await ghGet(idxPath);
-    let nextArr = [];
-    let idxSha = undefined;
-    if (curIdx.status === 404) {
-      nextArr = [];
-    } else if (curIdx.status < 400) {
-      idxSha = curIdx.data.sha;
-      try {
-        const arr = JSON.parse(decodeContent(curIdx.data) || '[]');
-        nextArr = Array.isArray(arr) ? arr.filter(p=>p.id !== id) : [];
-      } catch { nextArr = []; }
-    } else {
-      return json(curIdx.status, { error: 'github_get_index_error', details: curIdx.data });
+    const qp = new URLSearchParams(event.queryStringParameters || {});
+    let body = {};
+    try { body = event.body ? JSON.parse(event.body) : {}; } catch { body = {}; }
+
+    const slug = (body.slug || body.id || qp.get("slug") || qp.get("id") || "").trim();
+    if (!slug) return bad("id/slug requerido");
+
+    const base = `projects/${slug}`;
+
+    // 1) Llista tots els fitxers
+    const listing = await ghList(base, BRANCH);
+    if (listing.status === 404) {
+      // Ja no existeix; retornem ok
+      return ok({ ok: true, id: slug, deleted: 0, info: "not_found" });
+    }
+    if (!listing.ok || !Array.isArray(listing.data)) {
+      return json(listing.status || 500, { error: "github_list_error", details: listing.data });
     }
 
-    const putIdx = await ghPut(idxPath, JSON.stringify(nextArr, null, 2), `chore: remove ${id} from index`, idxSha);
-    if (putIdx.status >= 400) return json(putIdx.status, { error: 'github_put_index_error', details: putIdx.data });
+    const files = await listRecursive(base, BRANCH);
+    if (files.length === 0) return ok({ ok: true, id: slug, deleted: 0 });
 
-    return ok({ ok: true, id });
+    // 2) Esborra fitxer a fitxer (GitHub esborra carpetes quan queden buides)
+    let deleted = 0;
+    const results = [];
+
+    for (const f of files) {
+      const msg = `chore(${slug}): delete ${f.path}`;
+      const del = await ghDeleteFile(f.path, msg, f.sha, BRANCH);
+      results.push({ path: f.path, ok: del.ok, status: del.status, error: del.ok ? null : del.data });
+      if (del.ok) deleted++;
+      // Si GitHub limita, podríem introduir un petit delay:
+      // await new Promise(r => setTimeout(r, 120));
+    }
+
+    return ok({ ok: true, id: slug, deleted, results });
+  } catch (err) {
+    return json(500, { error: "server_error", details: String(err && err.message || err) });
+  }
+};
+
   } catch (err) { return server(err); }
 };
