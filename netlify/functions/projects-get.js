@@ -102,3 +102,25 @@ exports.handler = async (event) => {
     return ok({ project, files });
   } catch (err) { return server(err); }
 };
+
+// des de query, accepta id o slug
+const qp = new URLSearchParams(event.queryStringParameters || {});
+const slug = qp.get('slug') || qp.get('id');
+if (!slug) return bad('Missing slug');
+
+// llegeix els fitxers existents al directori projects/<slug>
+const base = `projects/${slug}`;
+const list = await ghGet(`${base}`);      // GET contents/… del directori
+if (list.status === 404) return json(404, { error: 'not_found' });
+if (list.status >= 400) return json(list.status, { error: 'github_error_list', details: list.data });
+
+const arr = Array.isArray(list.data) ? list.data : [];
+const files = {};
+for (const it of arr) {
+  if (it.type === 'file') {
+    const one = await ghGet(`${base}/${it.name}`);
+    if (one.status < 400) files[it.name] = decodeContent(one.data) || '';
+  }
+}
+return ok({ project: { id: slug, slug, name: slug }, files });
+
