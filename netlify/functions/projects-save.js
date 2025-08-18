@@ -1,209 +1,207 @@
-// Netlify Function: projects-save
-// Goal: save a project's generated files to a GitHub repo (data repo)
-// Robust version: if direct push is blocked (branch protections),
-// it creates a new branch and opens a Pull Request.
-//
-// Env vars expected (set in Netlify):
-//   GH_TOKEN   - GitHub PAT (fine‑grained ok). Needs:
-//                Contents: Read & write, Pull requests: Read & write, Metadata: Read‑only
-//   GH_OWNER   - GitHub owner/user (e.g., "Marc-Comas")
-//   GH_REPO    - Data repo (e.g., "project-central-data")
-//   GH_BRANCH  - Base branch to merge into (default: "main")
-//   GH_COMMIT_MODE - optional: "pr" (default) or "direct"
-//
-// Request body JSON:
-//   { project: { id, name, slug }, files: { "index.html": "...", "styles/style.css": "...", "scripts/app.js": "..." } }
+// ===============================
+// file: netlify/functions/push-to-github.js
+// Purpose: Read DATA repo config from env + tiny GitHub helper used by
+//          projects-save / projects-list / projects-get / projects-delete
+// ===============================
 
-exports.handler = async (event) => {
-  if (event.httpMethod === 'OPTIONS') {
-    return { statusCode: 200, headers: corsHeaders(), body: '' };
-  }
+const GITHUB_API = "https://api.github.com";
 
-  try {
-    const body = JSON.parse(event.body || '{}');
-    const { project, files } = body;
-
-    if (!project || !project.name) {
-      return json(400, { ok: false, error: 'Missing project {id,name,slug}.' });
-    }
-    if (!files || typeof files !== 'object' || Object.keys(files).length === 0) {
-      return json(400, { ok: false, error: 'Missing files: expected an object with at least index.html.' });
-    }
-
-   // ── substituir el bloc on es llegeixen token/owner/repo ──
-const pick = () => ({
-  TOKEN:  process.env.GITHUB_DATA_TOKEN || process.env.GH_DATA_TOKEN || process.env.GITHUB_TOKEN || process.env.GH_TOKEN,
-  OWNER:  process.env.GH_DATA_OWNER     || process.env.GITHUB_OWNER  || process.env.GH_OWNER,
-  REPO:   process.env.GH_DATA_REPO      || process.env.GITHUB_DATA_REPO || process.env.GITHUB_REPO || process.env.GH_REPO,
-  BRANCH: process.env.GH_DATA_BRANCH    || process.env.GITHUB_DATA_BRANCH || process.env.GH_BRANCH || 'main',
-  MODE:  (process.env.GH_COMMIT_MODE || 'pr').toLowerCase()
-});
-
-const { TOKEN, OWNER, REPO, BRANCH, MODE } = pick();
-if (!TOKEN || !OWNER || !REPO) {
-  return json(400, { ok:false, error:'Missing GH credentials (…DATA… or fallback tokens).' });
+/** Build config for the *DATA* repo, safely reading env names you use. */
+export function buildDataConfig() {
+  const cfg = {
+    owner: process.env.GH_DATA_OWNER || process.env.GH_OWNER || "",
+    repo: process.env.GH_DATA_REPO || process.env.GH_REPO || "",
+    /** Prefer dedicated token for DATA; fallback to the normal GitHub token */
+    token: process.env.GITHUB_DATA_TOKEN || process.env.GITHUB_TOKEN || process.env.GH_TOKEN || "",
+    branch: process.env.GH_DATA_BRANCH || process.env.GH_BRANCH || "main",
+  };
+  return cfg;
 }
-const apiBase = 'https://api.github.com';
-const commitMode = MODE;           // 'pr' | 'direct'
-const baseBranch = BRANCH;
 
+/** Fail fast with a clear error instead of throwing reference errors */
+export function validateDataConfig(cfg) {
+  if (!cfg.owner) return { ok: false, error: "owner is not defined" };
+  if (!cfg.repo) return { ok: false, error: "repo is not defined" };
+  if (!cfg.token) return { ok: false, error: "token is not defined" };
+  return { ok: true };
+}
 
-    // 1) Resolve repo + base branch sha
-    const repoInfo = await gh(`${apiBase}/repos/${owner}/${repo}`, token);
-    if (!repoInfo.ok) return repoInfo;
+/**
+ * PUT (create/update) a single file using GitHub Contents API.
+ * It auto-fetches the file SHA if the file already exists.
+ */
+async function putFile({ owner, repo, branch, token }, path, content, message) {
+  const url = `${GITHUB_API}/repos/${owner}/${repo}/contents/${encodeURIComponent(path)}`;
+  const headers = {
+    Accept: "application/vnd.github+json",
+    Authorization: `Bearer ${token}`,
+    "Content-Type": "application/json",
+  };
 
-    const base = baseBranch || repoInfo.data.default_branch || 'main';
-    const refInfo = await gh(`${apiBase}/repos/${owner}/${repo}/git/ref/heads/${encodeURIComponent(base)}`, token);
-    if (!refInfo.ok) return refInfo;
-    const baseSha = refInfo.data.object.sha;
-
-    const slug = (project.slug || project.name || 'site')
-      .toString()
-      .trim()
-      .toLowerCase()
-      .replace(/[^a-z0-9-]+/g, '-')
-      .replace(/^-+|-+$/g, '');
-
-    const targetDir = `projects/${slug}`;
-
-    // decide target branch
-    let workBranch = base;
-    let createdBranch = false;
-
-    if (commitMode !== 'direct') {
-      workBranch = `pc-${slug}-${Date.now().toString(36)}`;
-      const createRef = await gh(`${apiBase}/repos/${owner}/${repo}/git/refs`, token, {
-        method: 'POST',
-        body: {
-          ref: `refs/heads/${workBranch}`,
-          sha: baseSha,
-        },
-      });
-
-      // If branch already exists (rare on retries), append a suffix and try again
-      if (!createRef.ok) {
-        if (createRef.status === 422 && /Reference already exists/i.test(createRef.message || '')) {
-          workBranch = `${workBranch}-a`;
-          const retryRef = await gh(`${apiBase}/repos/${owner}/${repo}/git/refs`, token, {
-            method: 'POST',
-            body: { ref: `refs/heads/${workBranch}`, sha: baseSha },
-          });
-          if (!retryRef.ok) return retryRef;
-        } else {
-          return createRef;
-        }
-      }
-      createdBranch = true;
-    }
-
-    // 2) Write files to repo (on workBranch)
-    const results = [];
-    for (const [relative, content] of Object.entries(files)) {
-      const path = `${targetDir}/${relative}`.replace(/\\/g, '/');
-      const putRes = await gh(`${apiBase}/repos/${owner}/${repo}/contents/${encodeURIComponent(path)}`, token, {
-        method: 'PUT',
-        body: {
-          message: `Project Central: save ${project.name} → ${path}`,
-          content: b64(content),
-          branch: workBranch,
-        },
-      });
-
-      results.push({ path, committed: putRes.ok, status: putRes.status, error: putRes.ok ? undefined : putRes.message });
-
-      // On 401/403, return a clear error immediately
-      if (!putRes.ok && (putRes.status === 401 || putRes.status === 403)) {
-        return json(200, {
-          ok: false,
-          reason: 'github_auth_or_permissions',
-          hint: hintFor403(commitMode),
-          owner,
-          repo,
-          branchTried: workBranch,
-          status: putRes.status,
-          message: putRes.message,
-          results,
-        });
-      }
-
-      if (!putRes.ok) return json(200, { ok: false, owner, repo, branchTried: workBranch, status: putRes.status, message: putRes.message, results });
-    }
-
-    // 3) If PR mode, open the PR
-    let pr = null;
-    if (commitMode !== 'direct') {
-      const prRes = await gh(`${apiBase}/repos/${owner}/${repo}/pulls`, token, {
-        method: 'POST',
-        body: {
-          title: `Project Central – ${project.name}`,
-          head: workBranch,
-          base: base,
-          body: `Automated save from Project Central for project **${project.name}** (id: ${project.id || 'n/a'}).\n\nFiles: ${Object.keys(files).map(f => `${targetDir}/${f}`).join(', ')}`,
-        },
-      });
-      if (!prRes.ok) return prRes;
-      pr = { number: prRes.data.number, url: prRes.data.html_url };
-    }
-
-    return json(200, {
-      ok: true,
-      mode: commitMode,
-      owner,
-      repo,
-      base,
-      branch: workBranch,
-      createdBranch,
-      pr,
-      results,
-    });
-  } catch (err) {
-    return json(200, { ok: false, error: String(err && err.message || err) });
+  // Check if the file exists to include its SHA on update
+  let sha = undefined;
+  const getRes = await fetch(`${url}?ref=${encodeURIComponent(branch)}`, { headers });
+  if (getRes.ok) {
+    const existing = await getRes.json();
+    // Only set SHA if response has it (i.e., file exists on that branch)
+    if (existing && existing.sha) sha = existing.sha;
   }
-};
 
-// --- helpers ---------------------------------------------------------------
-function corsHeaders() {
+  const body = {
+    message: message || `Save ${path}`,
+    content: Buffer.from(content ?? "").toString("base64"),
+    branch,
+    sha,
+  };
+
+  const putRes = await fetch(url, {
+    method: "PUT",
+    headers,
+    body: JSON.stringify(body),
+  });
+
+  if (!putRes.ok) {
+    const err = await putRes.text();
+    return { path, committed: false, error: `GitHub ${putRes.status}: ${err}` };
+  }
+  return { path, committed: true };
+}
+
+/** PUT a set of files; returns an array with per-file outcomes */
+export async function putFiles(cfg, files, basePath = "") {
+  const safe = validateDataConfig(cfg);
+  if (!safe.ok) return { ok: false, results: [], error: safe.error };
+
+  const results = [];
+  for (const f of files) {
+    // Skip undefined/empty optional files cleanly
+    const content = typeof f.content === "string" ? f.content : "";
+    if (!content.trim()) {
+      results.push({ path: f.path, committed: false, error: "empty_file" });
+      continue;
+    }
+    const path = basePath ? `${basePath.replace(/\/$/, "")}/${f.path}` : f.path;
+    /* eslint-disable no-await-in-loop */
+    const r = await putFile(cfg, path, content, f.message);
+    results.push(r);
+  }
+  return { ok: true, results };
+}
+
+// Optional helper used by projects-list to provide a debug summary
+export function publicConfigSummary(cfg) {
   return {
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'POST,OPTIONS,GET',
-    'Access-Control-Allow-Headers': 'Content-Type',
-    'Content-Type': 'application/json'
+    ok: true,
+    owner: cfg.owner || null,
+    repo: cfg.repo || null,
+    branch: cfg.branch || null,
+    hasToken: Boolean(cfg.token),
   };
 }
 
-function json(statusCode, obj) {
-  return { statusCode, headers: corsHeaders(), body: JSON.stringify(obj) };
+
+// ===============================
+// file: netlify/functions/projects-save.js
+// Purpose: Save a project to DATA repo under projects/<slug>/
+// ===============================
+
+import { buildDataConfig, validateDataConfig, putFiles } from "./push-to-github.js";
+
+function corsHeaders() {
+  return {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "POST,OPTIONS,GET",
+    "Access-Control-Allow-Headers": "Content-Type",
+  };
 }
 
-function b64(str) {
-  return Buffer.from(String(str), 'utf8').toString('base64');
+function json(code, obj) {
+  return { statusCode: code, headers: { ...corsHeaders(), "Content-Type": "application/json" }, body: JSON.stringify(obj) };
 }
 
-async function gh(url, token, init = {}) {
-  const res = await fetch(url, {
-    method: init.method || 'GET',
-    headers: {
-      'Authorization': `Bearer ${token}`,
-      'Accept': 'application/vnd.github+json',
-      'X-GitHub-Api-Version': '2022-11-28',
-      'Content-Type': 'application/json',
-    },
-    body: init.body ? JSON.stringify(init.body) : undefined,
-  });
+export const handler = async (event) => {
+  if (event.httpMethod === "OPTIONS") return json(200, {});
+  if (event.httpMethod !== "POST") return json(405, { ok: false, error: "Method Not Allowed" });
 
-  const text = await res.text();
-  let data = null;
-  try { data = text ? JSON.parse(text) : null; } catch (_) { /* ignore */ }
+  let payload;
+  try { payload = JSON.parse(event.body || "{}"); } catch { return json(400, { ok: false, error: "Invalid JSON" }); }
 
-  const ok = res.status >= 200 && res.status < 300;
-  const message = ok ? undefined : (data && data.message) || text || `HTTP ${res.status}`;
+  const { project, files } = payload || {};
+  if (!project || !project.slug) return json(400, { ok: false, error: "Missing project.slug" });
+  if (!files || typeof files !== "object") return json(400, { ok: false, error: "Missing files" });
 
-  return { ok, status: res.status, data, message };
-}
+  const cfg = buildDataConfig();
+  const valid = validateDataConfig(cfg);
+  if (!valid.ok) return json(200, { ok: false, error: valid.error });
 
-function hintFor403(mode) {
-  return mode === 'direct'
-    ? 'Branch protections or "Restrict who can push" may be enabled on the target branch. Disable them or switch GH_COMMIT_MODE to "pr".'
-    : 'Your token must allow: Contents (Read & write) and Pull requests (Read & write). If it still fails, ensure the data repo is selected in the token and not restricted by organization policies.';
-}
+  const base = `projects/${project.slug}`;
+  const set = [
+    { path: "index.html", content: files["index.html"], message: `Save ${base}/index.html` },
+    { path: "styles/style.css", content: files["styles/style.css"], message: `Save ${base}/styles/style.css` },
+    { path: "scripts/app.js", content: files["scripts/app.js"], message: `Save ${base}/scripts/app.js` },
+  ];
 
+  const result = await putFiles(cfg, set, base);
+  return json(200, result);
+};
+
+
+// ===============================
+// file: netlify/functions/projects-list.js
+// Purpose: list/diagnostics (returns config summary when ?debug=1)
+// ===============================
+
+import { buildDataConfig, publicConfigSummary } from "./push-to-github.js";
+
+export const handler = async (event) => {
+  const debug = (event.queryStringParameters || {}).debug;
+  const cfg = buildDataConfig();
+  if (debug) {
+    return {
+      statusCode: 200,
+      headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+      body: JSON.stringify(publicConfigSummary(cfg)),
+    };
+  }
+  return {
+    statusCode: 200,
+    headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+    body: JSON.stringify({ ok: true }),
+  };
+};
+
+
+// ===============================
+// file: netlify/functions/projects-get.js
+// (kept minimal; uses the same config builder if later you fetch files)
+// ===============================
+
+import { buildDataConfig, validateDataConfig } from "./push-to-github.js";
+
+export const handler = async () => {
+  const cfg = buildDataConfig();
+  const v = validateDataConfig(cfg);
+  return {
+    statusCode: 200,
+    headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+    body: JSON.stringify(v.ok ? { ok: true } : { ok: false, error: v.error }),
+  };
+};
+
+
+// ===============================
+// file: netlify/functions/projects-delete.js
+// (optional) demonstrates the same config usage; implement when needed
+// ===============================
+
+import { buildDataConfig, validateDataConfig } from "./push-to-github.js";
+
+export const handler = async () => {
+  const cfg = buildDataConfig();
+  const v = validateDataConfig(cfg);
+  return {
+    statusCode: 200,
+    headers: { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" },
+    body: JSON.stringify(v.ok ? { ok: true } : { ok: false, error: v.error }),
+  };
+};
