@@ -200,7 +200,6 @@ async function apiListProjects(){
   const r = await fetch('/.netlify/functions/projects-list');
   const data = await r.json().catch(()=>({}));
   if(!r.ok) throw new Error(data.error || 'github_list_error');
-  // Normaliza: puede llegar como array de strings o array de objetos parciales
   const arr = Array.isArray(data.projects)? data.projects : [];
   return arr.map(x=>{
     if(typeof x === 'string') return { id:x, slug:x, name:x };
@@ -399,6 +398,20 @@ function buildOpenAIHeaders(){
   return headers;
 }
 
+/* ===== Helper robust: fetch JSON tolerant ===== */
+async function fetchJsonRobust(url, opts){
+  const res = await fetch(url, opts);
+  const text = await res.text();
+  let data=null;
+  try{ data = text ? JSON.parse(text) : null; }catch{ data = null; }
+  if(!res.ok){
+    const msg = (data && (data.error||data.message)) || `HTTP ${res.status}`;
+    throw new Error(msg);
+  }
+  if(!data) throw new Error('Respuesta vacía del servidor');
+  return data;
+}
+
 /* ===== New / Generate ===== */
 function generateSite({name,prompt}){
   const accent=(getSettings().accent)||'#7aa2ff';
@@ -424,9 +437,11 @@ function wireNewForm(){
     const slug=slugify(name); const id=uuid();
     let files;
     try{
-      const r=await fetch('/.netlify/functions/generate',{method:'POST',headers:buildOpenAIHeaders(),body:JSON.stringify({prompt,name})});
-      const data=await r.json(); if(!r.ok) throw new Error(data.error||'Error de generación'); files = data.files;
+      const data = await fetchJsonRobust('/.netlify/functions/generate',{method:'POST',headers:buildOpenAIHeaders(),body:JSON.stringify({prompt,name})});
+      if(!data.files) throw new Error('La función no devolvió archivos');
+      files = data.files;
     }catch(err){
+      console.warn('[generate] Fallback local por error:', err);
       files = generateSite({name,prompt}).files;
     }
     const proj={id,name,slug,desc,status:'generated',files,createdAt:Date.now(),updatedAt:Date.now()};
@@ -469,19 +484,17 @@ async function renderPreview(params){
   let proj = id ? getProjectByIdLocal(id) : null;
   if(!proj){ location.hash='#/dashboard'; return; }
 
-  // 🔧 FIX: siempre intentamos traer los archivos desde la nube si faltan (independiente de cloudMode)
+  // Si falten fitxers en local, prova de baixar-los de la “nube”
   if(!proj.files || !proj.files['index.html']){
     try{
       const data = await apiGetProject(id);
       if(data && data.files){
         proj = {...proj, files: data.files};
-        // guarda en local sin forzar push a nube
         const st=getSettings(); const before=!!st.cloudMode; st.cloudMode=false; setSettings(st);
         await upsertProject(proj);
-        // restaurar cloudMode
         st.cloudMode=before; setSettings(st);
       }
-    }catch{}
+    }catch(e){ console.warn('No se pudieron traer files desde la nube:', e); }
   }
 
   const pvTitle = $('#pv-title'); const pvInfo=$('#pv-info'); const pvErr=$('#pv-error');
@@ -496,13 +509,15 @@ async function renderPreview(params){
     pvInfo.hidden=false; pvInfo.textContent='Aplicando cambios con IA...'; pvErr.hidden=true;
     try{
       const prompt = ($('#pv-prompt').value||'').trim(); if(!prompt) throw new Error('Escribe un prompt');
-      const r = await fetch('/.netlify/functions/generate', { method:'POST', headers: buildOpenAIHeaders(), body: JSON.stringify({ mode:'edit', prompt, name: proj.name, files: proj.files }) });
-      const data = await r.json();
-      if(!r.ok || !data.files) throw new Error(data.error||'La función no devolvió archivos');
+      const data = await fetchJsonRobust('/.netlify/functions/generate', { method:'POST', headers: buildOpenAIHeaders(), body: JSON.stringify({ mode:'edit', prompt, name: proj.name, files: proj.files }) });
+      if(!data.files) throw new Error('La función no devolvió archivos');
       const updated = {...proj, files: data.files, status:'edited', updatedAt: Date.now()};
       await upsertProject(updated);
       renderPreview(new URLSearchParams(`id=${encodeURIComponent(getProjectKey(proj))}`)); pvInfo.textContent='Cambios aplicados (IA).';
-    }catch(err){ pvInfo.hidden=true; pvErr.hidden=false; pvErr.textContent='Error: '+(err.message||''); }
+    }catch(err){
+      pvInfo.hidden=true; pvErr.hidden=false; pvErr.textContent='Error: '+(err.message||'');
+      console.warn('[edit AI] respuesta no JSON o vacía; detalls:', err);
+    }
   };
   $('#pv-apply-local').onclick = ()=>{
     const txt = ($('#pv-prompt').value||'').trim();
