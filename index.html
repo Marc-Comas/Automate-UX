@@ -191,14 +191,23 @@ function renderRoute(){
   $('#main').focus();
 }
 
+/* ===== Utility (id/slug) ===== */
+function uuid(){return 'p-'+Math.random().toString(36).slice(2,8)+'-'+Date.now().toString(36)}
+function slugify(s){return (s||'').toLowerCase().replace(/[^a-z0-9-]+/g,'-').replace(/^-+|-+$/g,'').slice(0,60)||'site'}
+
 /* ===== GitHub Cloud API client (via Netlify Functions) ===== */
 async function apiListProjects(){
   const r = await fetch('/.netlify/functions/projects-list');
   const data = await r.json().catch(()=>({}));
   if(!r.ok) throw new Error(data.error || 'github_list_error');
-  // Normalitza: pot venir com array d'objectes o d'slugs
+  // Normaliza: puede llegar como array de strings o array de objetos parciales
   const arr = Array.isArray(data.projects)? data.projects : [];
-  return arr.map(x=> typeof x === 'string' ? { id: x, slug: x, name: x } : ({ ...x, id: x.id || x.slug }));
+  return arr.map(x=>{
+    if(typeof x === 'string') return { id:x, slug:x, name:x };
+    const id = x.id || x.slug || slugify(x.name||'');
+    const name = x.name || x.slug || id;
+    return { ...x, id, slug: x.slug || id, name };
+  });
 }
 async function apiGetProject(id){
   const r = await fetch('/.netlify/functions/projects-get?id='+encodeURIComponent(id));
@@ -296,8 +305,6 @@ function bindGlobalMenuClose(){
     if(!e.target.closest('.menu') && !e.target.closest('[data-menu-btn]')) closeAllMenus();
   });
 }
-function uuid(){return 'p-'+Math.random().toString(36).slice(2,8)+'-'+Date.now().toString(36)}
-function slugify(s){return (s||'').toLowerCase().replace(/[^a-z0-9-]+/g,'-').replace(/^-+|-+$/g,'').slice(0,60)||'site'}
 
 /* ===== ZIP (store) ===== */
 const CRC_TABLE=(()=>{let c,t=[];for(let n=0;n<256;n++){c=n;for(let k=0;k<8;k++){c=c&1?0xedb88320^(c>>>1):c>>>1}t[n]=c>>>0}return t})();
