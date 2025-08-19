@@ -175,6 +175,9 @@ function setSettings(s){ const st=localState()||{settings:{},projects:[]}; st.se
 function loadProjectsLocal(){ const st=localState(); return (st && st.projects) || []; }
 function saveProjectsLocal(arr){ const st=localState()||{settings:{},projects:[]}; st.projects=Array.isArray(arr)?arr:[]; setLocalState(st); }
 
+function getProjectKey(p){ return p?.id || p?.slug; }
+function findProjectByIdOrSlug(id){ return loadProjectsLocal().find(p=>p.id===id || p.slug===id); }
+
 function routeEls(){return document.querySelectorAll('.route')}
 function renderRoute(){
   const hash = location.hash.replace('#/','') || 'dashboard';
@@ -193,7 +196,9 @@ async function apiListProjects(){
   const r = await fetch('/.netlify/functions/projects-list');
   const data = await r.json().catch(()=>({}));
   if(!r.ok) throw new Error(data.error || 'github_list_error');
-  return data.projects||[];
+  // Normalitza: pot venir com array d'objectes o d'slugs
+  const arr = Array.isArray(data.projects)? data.projects : [];
+  return arr.map(x=> typeof x === 'string' ? { id: x, slug: x, name: x } : ({ ...x, id: x.id || x.slug }));
 }
 async function apiGetProject(id){
   const r = await fetch('/.netlify/functions/projects-get?id='+encodeURIComponent(id));
@@ -214,9 +219,11 @@ async function apiDeleteProject(id){
   return data;
 }
 async function syncFromCloud(){
-  const list = await apiListProjects();
+  const remote = await apiListProjects();
   const st = localState()||{settings:{},projects:[]};
-  const map=new Map(); (st.projects||[]).forEach(p=>map.set(p.id,p)); (list||[]).forEach(p=>map.set(p.id,p));
+  const map=new Map();
+  (st.projects||[]).forEach(p=>{ const k=getProjectKey(p); if(k) map.set(k,{...p, id:k}); });
+  (remote||[]).forEach(p=>{ const k=getProjectKey(p); if(k) map.set(k,{...p, id:k}); });
   st.projects = Array.from(map.values());
   setLocalState(st);
 }
@@ -226,27 +233,28 @@ function renderProjects(){
   const list=loadProjectsLocal(); const ul=$('#projects-list'); ul.innerHTML='';
   $('#projects-empty').hidden=list.length>0;
   for(const p of list){
-    const li=document.createElement('li'); li.className='card';
+    const key=getProjectKey(p); if(!key) continue;
+    const li=document.createElement('li'); li.className='card'; li.dataset.id = key;
     li.innerHTML=`
       <div class="menu-wrap">
-        <button class="menu-btn" aria-haspopup="true" aria-expanded="false" aria-controls="menu-${p.id}" data-menu-btn data-id="${p.id}" title="Más acciones">⋮</button>
-        <div class="menu" id="menu-${p.id}" role="menu" aria-hidden="true">
-          <button role="menuitem" data-act="view" data-id="${p.id}">Ver</button>
-          <button role="menuitem" data-act="zip" data-id="${p.id}">Descargar ZIP</button>
-          <button role="menuitem" data-act="push" data-id="${p.id}">Push a GitHub</button>
-          <button role="menuitem" data-act="deploy-real" data-id="${p.id}">Deploy en Netlify</button>
+        <button class="menu-btn" aria-haspopup="true" aria-expanded="false" aria-controls="menu-${key}" data-menu-btn data-id="${key}" title="Más acciones">⋮</button>
+        <div class="menu" id="menu-${key}" role="menu" aria-hidden="true">
+          <button role="menuitem" data-act="view" data-id="${key}">Ver</button>
+          <button role="menuitem" data-act="zip" data-id="${key}">Descargar ZIP</button>
+          <button role="menuitem" data-act="push" data-id="${key}">Push a GitHub</button>
+          <button role="menuitem" data-act="deploy-real" data-id="${key}">Deploy en Netlify</button>
           <hr style="border:none;height:1px;background:#2b3b77;margin:6px 4px">
-          <button role="menuitem" class="danger" data-act="delete" data-id="${p.id}">Eliminar</button>
+          <button role="menuitem" class="danger" data-act="delete" data-id="${key}">Eliminar</button>
         </div>
       </div>
-      <h3 style="padding-right:36px">${p.name}</h3>
+      <h3 style="padding-right:36px">${p.name||p.slug||key}</h3>
       <p>${p.desc||''}</p>
       <div class="row" style="margin-bottom:8px"><span class="tag">${p.status||'local'}</span>${p.repo?`<span class="tag">${p.repo}</span>`:''}</div>
       <div class="row">
-        <button class="btn" data-act="view" data-id="${p.id}">Ver sitio</button>
-        <button class="btn" data-act="zip" data-id="${p.id}">Descargar ZIP</button>
-        <button class="btn" data-act="push" data-id="${p.id}">Push a GitHub</button>
-        <button class="btn" data-act="deploy-real" data-id="${p.id}">Deploy Netlify</button>
+        <button class="btn" data-act="view" data-id="${key}">Ver sitio</button>
+        <button class="btn" data-act="zip" data-id="${key}">Descargar ZIP</button>
+        <button class="btn" data-act="push" data-id="${key}">Push a GitHub</button>
+        <button class="btn" data-act="deploy-real" data-id="${key}">Deploy Netlify</button>
       </div>`;
     ul.appendChild(li);
   }
@@ -264,17 +272,17 @@ function renderProjects(){
 
   ul.onclick=async(e)=>{
     const btn=e.target.closest('button[data-act]'); if(!btn) return;
-    const id=btn.dataset.id; const proj=(loadProjectsLocal().find(x=>x.id===id)); if(!proj) return;
+    const id=btn.dataset.id; const proj=findProjectByIdOrSlug(id); if(!proj) return;
     const action=btn.dataset.act;
     closeAllMenus();
     if(action==='view'){ openPreview(proj); }
     if(action==='zip'){
-      const blob=makeZip(proj.files||{}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`${proj.name}.zip`; a.click(); URL.revokeObjectURL(a.href);
+      const blob=makeZip(proj.files||{}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`${(proj.name||proj.slug||'site')}.zip`; a.click(); URL.revokeObjectURL(a.href);
     }
     if(action==='push'){ alert('Push a GitHub: usa tu función existente (sin cambios).'); }
     if(action==='deploy-real'){ alert('Trigger Netlify: usa tu función existente (sin cambios).'); }
     if(action==='delete'){
-      if(confirm('¿Seguro que quieres borrar este proyecto?')){ await deleteProject(proj.id); renderProjects(); }
+      if(confirm('¿Seguro que quieres borrar este proyecto?')){ await deleteProject(getProjectKey(proj)); renderProjects(); }
     }
   };
 }
@@ -391,7 +399,7 @@ function generateSite({name,prompt}){
   const body=`<main class="wrap"><h1>${escapeHtml(name)}</h1><p>${escapeHtml(prompt)}</p></main>`;
   return {files:{'index.html':`<!doctype html><html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(name)}</title><style>${css}</style></head><body>${body}</body></html>`}};
 }
-function escapeHtml(s=''){return s.replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]))}
+function escapeHtml(s=''){return s.replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;'}[m]))}
 
 function wireNewForm(){
   const form=$('#new-form'); const info=$('#form-info'); const errors=$('#form-errors');
@@ -424,20 +432,21 @@ function resetNewFormUI(){ const form=$('#new-form'); if(!form) return; form.res
 
 /* ===== Upsert/Delete con Cloud mode ===== */
 async function upsertProject(p){
+  const key = getProjectKey(p) || (p.slug ? (p.id=p.slug) : null);
   const cur = loadProjectsLocal();
-  const i = cur.findIndex(x=>x.id===p.id);
-  if(i>=0) cur[i]=p; else cur.unshift(p);
+  const i = cur.findIndex(x=>getProjectKey(x)===key);
+  if(i>=0) cur[i]={...cur[i],...p}; else cur.unshift({...p, id:key});
   saveProjectsLocal(cur);
 
   const st=getSettings();
   if(st.cloudMode){
-    const meta={...p}; delete meta.files;
+    const meta={...p}; delete meta.files; if(!meta.id) meta.id = key; if(!meta.slug) meta.slug = key;
     try{ await apiSaveProject(meta, p.files||{}); }catch(err){ alert('Error guardando en nube: '+(err.message||'')); }
   }
   renderProjects();
 }
 async function deleteProject(id){
-  const cur = loadProjectsLocal().filter(p=>p.id!==id);
+  const cur = loadProjectsLocal().filter(p=>getProjectKey(p)!==id);
   saveProjectsLocal(cur);
   const st=getSettings();
   if(st.cloudMode){
@@ -446,8 +455,8 @@ async function deleteProject(id){
 }
 
 /* ===== Preview ===== */
-function getProjectByIdLocal(id){ return loadProjectsLocal().find(p=>p.id===id); }
-function openPreview(proj){ location.hash = `#/preview?id=${encodeURIComponent(proj.id)}`; }
+function getProjectByIdLocal(id){ return findProjectByIdOrSlug(id); }
+function openPreview(projOrId){ const id = typeof projOrId==='string' ? projOrId : getProjectKey(projOrId); if(!id) return; location.hash = `#/preview?id=${encodeURIComponent(id)}`; }
 async function renderPreview(params){
   const id = params.get('id');
   let proj = id ? getProjectByIdLocal(id) : null;
@@ -465,12 +474,12 @@ async function renderPreview(params){
   }
 
   const pvTitle = $('#pv-title'); const pvInfo=$('#pv-info'); const pvErr=$('#pv-error');
-  pvTitle.textContent = `Preview — ${proj.name}`;
+  pvTitle.textContent = `Preview — ${proj.name||proj.slug||id}`;
   const iframe = $('#pv-iframe');
   const html = (proj.files && proj.files['index.html']) ? proj.files['index.html'] : '<h1>Sin index.html</h1>';
   iframe.src = URL.createObjectURL(new Blob([html],{type:'text/html'}));
 
-  $('#pv-download').onclick=()=>{ const blob=makeZip(proj.files||{}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`${proj.name}.zip`; a.click(); URL.revokeObjectURL(a.href); };
+  $('#pv-download').onclick=()=>{ const blob=makeZip(proj.files||{}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`${(proj.name||proj.slug||'site')}.zip`; a.click(); URL.revokeObjectURL(a.href); };
 
   $('#pv-apply-ai').onclick = async ()=>{
     pvInfo.hidden=false; pvInfo.textContent='Aplicando cambios con IA...'; pvErr.hidden=true;
@@ -481,7 +490,7 @@ async function renderPreview(params){
       if(!r.ok || !data.files) throw new Error(data.error||'La función no devolvió archivos');
       const updated = {...proj, files: data.files, status:'edited', updatedAt: Date.now()};
       await upsertProject(updated);
-      renderPreview(new URLSearchParams(`id=${encodeURIComponent(proj.id)}`)); pvInfo.textContent='Cambios aplicados (IA).';
+      renderPreview(new URLSearchParams(`id=${encodeURIComponent(getProjectKey(proj))}`)); pvInfo.textContent='Cambios aplicados (IA).';
     }catch(err){ pvInfo.hidden=true; pvErr.hidden=false; pvErr.textContent='Error: '+(err.message||''); }
   };
   $('#pv-apply-local').onclick = ()=>{
@@ -489,7 +498,7 @@ async function renderPreview(params){
     const updatedFiles = localEdit(proj.files||{}, txt);
     const updated = {...proj, files: updatedFiles, status:'edited', updatedAt: Date.now()};
     upsertProject(updated).then(()=>{
-      renderPreview(new URLSearchParams(`id=${encodeURIComponent(proj.id)}`));
+      renderPreview(new URLSearchParams(`id=${encodeURIComponent(getProjectKey(proj))}`));
       pvInfo.hidden=false; pvInfo.textContent='Cambios aplicados (local).'; pvErr.hidden=true;
     });
   };
@@ -513,7 +522,7 @@ function loadSettingsIntoUI(){
       const list = loadProjectsLocal();
       if(!confirm(`Subir ${list.length} proyectos al repositorio de datos?`)) return;
       for(const p of list){
-        const meta={...p}; delete meta.files;
+        const meta={...p}; delete meta.files; if(!meta.id) meta.id=getProjectKey(p); if(!meta.slug) meta.slug=getProjectKey(p);
         await apiSaveProject(meta, p.files||{});
       }
       info('Migración completada');
@@ -564,11 +573,11 @@ function loadSettingsIntoUI(){
       try{
         const incoming=JSON.parse(reader.result);
         const overwrite = confirm('¿Sobrescribir TODO? Cancel = MERGE.');
-        if(overwrite){ setLocalState({settings: incoming.settings||{}, projects: incoming.projects||[]}); }
+        if(overwrite){ setLocalState({settings: incoming.settings||{}, projects: (incoming.projects||[]).map(p=>({...p, id:getProjectKey(p)}))}); }
         else{
           const cur=localState()||{settings:{},projects:[]};
           const mergedSettings = {...cur.settings, ...(incoming.settings||{})};
-          const map=new Map(); (cur.projects||[]).forEach(p=>map.set(p.id,p)); (incoming.projects||[]).forEach(p=>map.set(p.id,p));
+          const map=new Map(); (cur.projects||[]).forEach(p=>{const k=getProjectKey(p); if(k) map.set(k,{...p,id:k});}); (incoming.projects||[]).forEach(p=>{const k=getProjectKey(p); if(k) map.set(k,{...p,id:k});});
           setLocalState({settings: mergedSettings, projects: Array.from(map.values())});
         }
         loadSettingsIntoUI(); renderProjects(); renderConnections(); info('Importación completada');
@@ -592,4 +601,3 @@ function renderConnections(){
 </script>
 </body>
 </html>
-
