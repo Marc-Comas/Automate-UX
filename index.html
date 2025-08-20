@@ -200,6 +200,7 @@ async function apiListProjects(){
   const r = await fetch('/.netlify/functions/projects-list');
   const data = await r.json().catch(()=>({}));
   if(!r.ok) throw new Error(data.error || 'github_list_error');
+  // Normaliza: puede llegar como array de strings o array de objetos parciales
   const arr = Array.isArray(data.projects)? data.projects : [];
   return arr.map(x=>{
     if(typeof x === 'string') return { id:x, slug:x, name:x };
@@ -398,20 +399,6 @@ function buildOpenAIHeaders(){
   return headers;
 }
 
-/* ===== Helper robust: fetch JSON tolerant ===== */
-async function fetchJsonRobust(url, opts){
-  const res = await fetch(url, opts);
-  const text = await res.text();
-  let data=null;
-  try{ data = text ? JSON.parse(text) : null; }catch{ data = null; }
-  if(!res.ok){
-    const msg = (data && (data.error||data.message)) || `HTTP ${res.status}`;
-    throw new Error(msg);
-  }
-  if(!data) throw new Error('Respuesta vacía del servidor');
-  return data;
-}
-
 /* ===== New / Generate ===== */
 function generateSite({name,prompt}){
   const accent=(getSettings().accent)||'#7aa2ff';
@@ -437,11 +424,9 @@ function wireNewForm(){
     const slug=slugify(name); const id=uuid();
     let files;
     try{
-      const data = await fetchJsonRobust('/.netlify/functions/generate',{method:'POST',headers:buildOpenAIHeaders(),body:JSON.stringify({prompt,name})});
-      if(!data.files) throw new Error('La función no devolvió archivos');
-      files = data.files;
+      const r=await fetch('/.netlify/functions/generate',{method:'POST',headers:buildOpenAIHeaders(),body:JSON.stringify({prompt,name})});
+      const data=await r.json(); if(!r.ok) throw new Error(data.error||'Error de generación'); files = data.files;
     }catch(err){
-      console.warn('[generate] Fallback local por error:', err);
       files = generateSite({name,prompt}).files;
     }
     const proj={id,name,slug,desc,status:'generated',files,createdAt:Date.now(),updatedAt:Date.now()};
@@ -482,78 +467,50 @@ function openPreview(projOrId){ const id = typeof projOrId==='string' ? projOrId
 async function renderPreview(params){
   const id = params.get('id');
   let proj = id ? getProjectByIdLocal(id) : null;
-  if(!proj){ location.hash = '#/dashboard'; return; }
+  if(!proj){ location.hash='#/dashboard'; return; }
 
-  // Si estem en "cloudMode" i a local no tenim els fitxers, els demanem a la nube
-  const st = getSettings();
-  if (st.cloudMode && (!proj.files || !proj.files['index.html'])) {
-    try {
+  // 🔧 FIX: siempre intentamos traer los archivos desde la nube si faltan (independiente de cloudMode)
+  if(!proj.files || !proj.files['index.html']){
+    try{
       const data = await apiGetProject(id);
-      if (data && data.files) {
-        proj = { ...proj, files: data.files };
+      if(data && data.files){
+        proj = {...proj, files: data.files};
+        // guarda en local sin forzar push a nube
+        const st=getSettings(); const before=!!st.cloudMode; st.cloudMode=false; setSettings(st);
         await upsertProject(proj);
+        // restaurar cloudMode
+        st.cloudMode=before; setSettings(st);
       }
-    } catch (e) {
-      console.warn('[preview] No s\'han pogut recuperar els fitxers del núvol:', e);
-    }
+    }catch{}
   }
 
-  // Títol i iframe
-  const pvTitle = $('#pv-title');
-  const pvInfo  = $('#pv-info');
-  const pvErr   = $('#pv-error');
-  pvTitle.textContent = `Preview — ${proj.name || proj.slug || id}`;
-
+  const pvTitle = $('#pv-title'); const pvInfo=$('#pv-info'); const pvErr=$('#pv-error');
+  pvTitle.textContent = `Preview — ${proj.name||proj.slug||id}`;
   const iframe = $('#pv-iframe');
-  const html   = (proj.files && proj.files['index.html']) ? proj.files['index.html'] : '<h1>Sin index.html</h1>';
-  iframe.src = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+  const html = (proj.files && proj.files['index.html']) ? proj.files['index.html'] : '<h1>Sin index.html</h1>';
+  iframe.src = URL.createObjectURL(new Blob([html],{type:'text/html'}));
 
-  // Descarregar ZIP
-  $('#pv-download').onclick = () => {
-    const blob = makeZip(proj.files || {});
-    const a = document.createElement('a');
-    a.href = URL.createObjectURL(blob);
-    a.download = `${proj.name || proj.slug || 'project'}.zip`;
-    a.click();
-    URL.revokeObjectURL(a.href);
-  };
+  $('#pv-download').onclick=()=>{ const blob=makeZip(proj.files||{}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`${(proj.name||proj.slug||'site')}.zip`; a.click(); URL.revokeObjectURL(a.href); };
 
-  // Aplicar cambios (IA)
-  $('#pv-apply-ai').onclick = async () => {
-    pvInfo.hidden = false; pvInfo.textContent = 'Aplicando cambios con IA.'; pvErr.hidden = true;
-    try {
-      const prompt = ($('#pv-prompt').value || '').trim();
-      if (!prompt) throw new Error('Escribe un prompt');
-
-      // Crida tolerant: si la funció torna buit/HTML, no peta el JSON.parse
-      const data = await fetchJsonRobust('/.netlify/functions/generate', {
-        method: 'POST',
-        headers: buildOpenAIHeaders(),
-        body: JSON.stringify({ mode: 'edit', prompt, name: proj.name, files: proj.files })
-      });
-
-      if (!data || !data.files) throw new Error(data && data.error || 'La función no devolvió archivos');
-
-      const updated = { ...proj, files: data.files, status: 'edited', updatedAt: Date.now() };
+  $('#pv-apply-ai').onclick = async ()=>{
+    pvInfo.hidden=false; pvInfo.textContent='Aplicando cambios con IA...'; pvErr.hidden=true;
+    try{
+      const prompt = ($('#pv-prompt').value||'').trim(); if(!prompt) throw new Error('Escribe un prompt');
+      const r = await fetch('/.netlify/functions/generate', { method:'POST', headers: buildOpenAIHeaders(), body: JSON.stringify({ mode:'edit', prompt, name: proj.name, files: proj.files }) });
+      const data = await r.json();
+      if(!r.ok || !data.files) throw new Error(data.error||'La función no devolvió archivos');
+      const updated = {...proj, files: data.files, status:'edited', updatedAt: Date.now()};
       await upsertProject(updated);
-
-      // Re-render de la mateixa vista
-      renderPreview(new URLSearchParams(`id=${encodeURIComponent(updated.id)}`));
-      pvInfo.textContent = 'Cambios aplicados (IA).';
-    } catch (err) {
-      pvInfo.hidden = true; pvErr.hidden = false;
-      pvErr.textContent = 'Error: ' + (err.message || String(err));
-    }
+      renderPreview(new URLSearchParams(`id=${encodeURIComponent(getProjectKey(proj))}`)); pvInfo.textContent='Cambios aplicados (IA).';
+    }catch(err){ pvInfo.hidden=true; pvErr.hidden=false; pvErr.textContent='Error: '+(err.message||''); }
   };
-
-  // Aplicar cambios (local)
-  $('#pv-apply-local').onclick = () => {
-    const txt = ($('#pv-prompt').value || '').trim();
-    const updatedFiles = localEdit(proj.files || {}, txt);
-    const updated = { ...proj, files: updatedFiles, status: 'edited', updatedAt: Date.now() };
-    upsertProject(updated).then(() => {
-      renderPreview(new URLSearchParams(`id=${encodeURIComponent(updated.id)}`));
-      pvInfo.hidden = false; pvInfo.textContent = 'Cambios aplicados (local).'; pvErr.hidden = true;
+  $('#pv-apply-local').onclick = ()=>{
+    const txt = ($('#pv-prompt').value||'').trim();
+    const updatedFiles = localEdit(proj.files||{}, txt);
+    const updated = {...proj, files: updatedFiles, status:'edited', updatedAt: Date.now()};
+    upsertProject(updated).then(()=>{
+      renderPreview(new URLSearchParams(`id=${encodeURIComponent(getProjectKey(proj))}`));
+      pvInfo.hidden=false; pvInfo.textContent='Cambios aplicados (local).'; pvErr.hidden=true;
     });
   };
 }
@@ -655,4 +612,3 @@ function renderConnections(){
 </script>
 </body>
 </html>
-
