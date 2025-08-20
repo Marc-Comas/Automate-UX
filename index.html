@@ -482,50 +482,78 @@ function openPreview(projOrId){ const id = typeof projOrId==='string' ? projOrId
 async function renderPreview(params){
   const id = params.get('id');
   let proj = id ? getProjectByIdLocal(id) : null;
-  if(!proj){ location.hash='#/dashboard'; return; }
+  if(!proj){ location.hash = '#/dashboard'; return; }
 
-  // Si falten fitxers en local, prova de baixar-los de la “nube”
-  if(!proj.files || !proj.files['index.html']){
-    try{
+  // Si estem en "cloudMode" i a local no tenim els fitxers, els demanem a la nube
+  const st = getSettings();
+  if (st.cloudMode && (!proj.files || !proj.files['index.html'])) {
+    try {
       const data = await apiGetProject(id);
-      if(data && data.files){
-        proj = {...proj, files: data.files};
-        const st=getSettings(); const before=!!st.cloudMode; st.cloudMode=false; setSettings(st);
+      if (data && data.files) {
+        proj = { ...proj, files: data.files };
         await upsertProject(proj);
-        st.cloudMode=before; setSettings(st);
       }
-    }catch(e){ console.warn('No se pudieron traer files desde la nube:', e); }
+    } catch (e) {
+      console.warn('[preview] No s\'han pogut recuperar els fitxers del núvol:', e);
+    }
   }
 
-  const pvTitle = $('#pv-title'); const pvInfo=$('#pv-info'); const pvErr=$('#pv-error');
-  pvTitle.textContent = `Preview — ${proj.name||proj.slug||id}`;
+  // Títol i iframe
+  const pvTitle = $('#pv-title');
+  const pvInfo  = $('#pv-info');
+  const pvErr   = $('#pv-error');
+  pvTitle.textContent = `Preview — ${proj.name || proj.slug || id}`;
+
   const iframe = $('#pv-iframe');
-  const html = (proj.files && proj.files['index.html']) ? proj.files['index.html'] : '<h1>Sin index.html</h1>';
-  iframe.src = URL.createObjectURL(new Blob([html],{type:'text/html'}));
+  const html   = (proj.files && proj.files['index.html']) ? proj.files['index.html'] : '<h1>Sin index.html</h1>';
+  iframe.src = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
 
-  $('#pv-download').onclick=()=>{ const blob=makeZip(proj.files||{}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`${(proj.name||proj.slug||'site')}.zip`; a.click(); URL.revokeObjectURL(a.href); };
+  // Descarregar ZIP
+  $('#pv-download').onclick = () => {
+    const blob = makeZip(proj.files || {});
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `${proj.name || proj.slug || 'project'}.zip`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
 
-  $('#pv-apply-ai').onclick = async ()=>{
-    pvInfo.hidden=false; pvInfo.textContent='Aplicando cambios con IA...'; pvErr.hidden=true;
-    try{
-      const prompt = ($('#pv-prompt').value||'').trim(); if(!prompt) throw new Error('Escribe un prompt');
-      const data = await fetchJsonRobust('/.netlify/functions/generate', { method:'POST', headers: buildOpenAIHeaders(), body: JSON.stringify({ mode:'edit', prompt, name: proj.name, files: proj.files }) });
-      if(!data.files) throw new Error('La función no devolvió archivos');
-      const updated = {...proj, files: data.files, status:'edited', updatedAt: Date.now()};
+  // Aplicar cambios (IA)
+  $('#pv-apply-ai').onclick = async () => {
+    pvInfo.hidden = false; pvInfo.textContent = 'Aplicando cambios con IA.'; pvErr.hidden = true;
+    try {
+      const prompt = ($('#pv-prompt').value || '').trim();
+      if (!prompt) throw new Error('Escribe un prompt');
+
+      // Crida tolerant: si la funció torna buit/HTML, no peta el JSON.parse
+      const data = await fetchJsonRobust('/.netlify/functions/generate', {
+        method: 'POST',
+        headers: buildOpenAIHeaders(),
+        body: JSON.stringify({ mode: 'edit', prompt, name: proj.name, files: proj.files })
+      });
+
+      if (!data || !data.files) throw new Error(data && data.error || 'La función no devolvió archivos');
+
+      const updated = { ...proj, files: data.files, status: 'edited', updatedAt: Date.now() };
       await upsertProject(updated);
-      renderPreview(new URLSearchParams(`id=${encodeURIComponent(getProjectKey(proj))}`)); pvInfo.textContent='Cambios aplicados (IA).';
-    }catch(err){
-      pvInfo.hidden=true; pvErr.hidden=false; pvErr.textContent='Error: '+(err.message||'');
-      console.warn('[edit AI] respuesta no JSON o vacía; detalls:', err);
+
+      // Re-render de la mateixa vista
+      renderPreview(new URLSearchParams(`id=${encodeURIComponent(updated.id)}`));
+      pvInfo.textContent = 'Cambios aplicados (IA).';
+    } catch (err) {
+      pvInfo.hidden = true; pvErr.hidden = false;
+      pvErr.textContent = 'Error: ' + (err.message || String(err));
     }
   };
-  $('#pv-apply-local').onclick = ()=>{
-    const txt = ($('#pv-prompt').value||'').trim();
-    const updatedFiles = localEdit(proj.files||{}, txt);
-    const updated = {...proj, files: updatedFiles, status:'edited', updatedAt: Date.now()};
-    upsertProject(updated).then(()=>{
-      renderPreview(new URLSearchParams(`id=${encodeURIComponent(getProjectKey(proj))}`));
-      pvInfo.hidden=false; pvInfo.textContent='Cambios aplicados (local).'; pvErr.hidden=true;
+
+  // Aplicar cambios (local)
+  $('#pv-apply-local').onclick = () => {
+    const txt = ($('#pv-prompt').value || '').trim();
+    const updatedFiles = localEdit(proj.files || {}, txt);
+    const updated = { ...proj, files: updatedFiles, status: 'edited', updatedAt: Date.now() };
+    upsertProject(updated).then(() => {
+      renderPreview(new URLSearchParams(`id=${encodeURIComponent(updated.id)}`));
+      pvInfo.hidden = false; pvInfo.textContent = 'Cambios aplicados (local).'; pvErr.hidden = true;
     });
   };
 }
