@@ -294,3 +294,4 @@ function escapeHtml(s) {
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#39;');
 }
+
