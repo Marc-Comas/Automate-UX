@@ -1,4 +1,6 @@
-// /netlify/functions/generate.mjs
+// /netlify/functions/generate.mjs  (ESM, Netlify Functions v2)
+
+// CORS i preflight
 const CORS = {
   'Content-Type': 'application/json',
   'Access-Control-Allow-Origin': '*',
@@ -7,7 +9,7 @@ const CORS = {
 };
 
 export default async (req) => {
-  // Suport preflight
+  // Preflight
   if (req.method === 'OPTIONS') {
     return new Response(null, { status: 204, headers: CORS });
   }
@@ -16,18 +18,20 @@ export default async (req) => {
     const body = await req.json().catch(() => ({}));
     const { mode = 'new', name = 'Proyecto', prompt = '', files = {} } = body;
 
-    // Claus (headers en local, variables en prod)
+    // Claus (headers en local, env vars en prod)
     const apiKey =
       req.headers.get('x-openai-key') || process.env.OPENAI_API_KEY || '';
-    const openaiProject = process.env.OPENAI_PROJECT || '';
-    const openaiOrg = process.env.OPENAI_ORG_ID || '';
+    const openaiProject =
+      req.headers.get('x-openai-project') || process.env.OPENAI_PROJECT || '';
+    const openaiOrg =
+      req.headers.get('x-openai-org') || process.env.OPENAI_ORG_ID || '';
 
-    // Evitem 504 de Netlify: límit propi < 26s
+    // Límit propi per evitar 504 de Netlify
     const timeoutMs = 23000;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort('timeout'), timeoutMs);
 
-    // Si no hi ha clau → fallback immediat (mai 504)
+    // Sense clau → generar/editar en local immediatament (mai 504)
     if (!apiKey) {
       clearTimeout(timer);
       const out =
@@ -37,13 +41,21 @@ export default async (req) => {
       return json({ ok: true, files: out, note: 'no_api_key_fallback' });
     }
 
-    // ---------- Crida a OpenAI (Responses API) ----------
+    // --- Crida a OpenAI: Responses API ---
     const system =
       'Eres un generador de sitios. Devuelve SOLO JSON con {"files":{"index.html":"...","styles/style.css":"...","scripts/app.js":"..."}}. No añadas explicaciones fuera del JSON.';
 
+    // Si fem "edit", pots enviar també un breu “contexto” dins el prompt.
+    const userInput = [
+      system,
+      '',
+      'USER_PROMPT:',
+      String(prompt || '').trim() || '(sin prompt)',
+    ].join('\n');
+
     const payload = {
       model: 'gpt-4.1-mini',
-      input: `${system}\n\nUSER_PROMPT:\n${prompt}`,
+      input: userInput,
       temperature: 0.2,
       response_format: { type: 'json_object' },
     };
@@ -57,6 +69,7 @@ export default async (req) => {
 
     let data = null;
     let status = 0;
+
     try {
       const resp = await fetch('https://api.openai.com/v1/responses', {
         method: 'POST',
@@ -71,21 +84,21 @@ export default async (req) => {
       } catch {
         data = null;
       }
-    } catch (e) {
-      // Timeout/Abort o error de xarxa → data = null per fer fallback
+    } catch {
+      // Timeout/Abort o error de xarxa → engeguem fallback
       data = null;
     } finally {
       clearTimeout(timer);
     }
 
-    // Intentem treure el JSON de "files" del que torni OpenAI
+    // Intentem extreure {files:{...}} del que torni OpenAI
     const filesFromAI = extractFilesFromOpenAI(data);
 
-    if (filesFromAI && filesFromAI['index.html']) {
+    if (filesFromAI && typeof filesFromAI['index.html'] === 'string') {
       return json({ ok: true, files: filesFromAI });
     }
 
-    // ---------- Fallback fiable ----------
+    // --- Fallback fiable en tots els casos ---
     const out =
       mode === 'edit'
         ? localEditServer(files, prompt)
@@ -103,28 +116,28 @@ export default async (req) => {
   }
 };
 
-// ---------- Helpers ----------
+// ---------- Helpers comuns ----------
 
 function json(data, status = 200) {
   return new Response(JSON.stringify(data), { status, headers: CORS });
 }
 
 /**
- * Intenta extreure {files:{...}} de diferents formats de la Responses API.
+ * Extracció tolerant del bloc {files:{...}} de la Responses API.
+ * Cobreix: output_text, output[].content[].text/value, i “pesca” de JSON dins l’objecte.
  */
 function extractFilesFromOpenAI(data) {
   if (!data) return null;
 
-  // 1) data.output_text (quan ve ja com a text)
+  // 1) data.output_text (molt habitual)
   if (typeof data.output_text === 'string') {
     const obj = safeParseJson(data.output_text);
     if (obj?.files) return obj.files;
   }
 
-  // 2) data.output (array) → parts amb {text} o {value}
+  // 2) data.output (array) → content amb {text} o {value}
   if (Array.isArray(data.output)) {
     for (const chunk of data.output) {
-      // alguns models retornen {type:"message", content:[{type:"output_text", text:"{...}"}]}
       const parts = Array.isArray(chunk?.content) ? chunk.content : [];
       for (const p of parts) {
         const candidate =
@@ -141,12 +154,12 @@ function extractFilesFromOpenAI(data) {
     }
   }
 
-  // 3) buscar JSON dins d'algun string general (backup)
+  // 3) backup: busca qualsevol JSON gran dins de l’objecte
   const raw = JSON.stringify(data);
-  const match = raw.match(/\{(?:[^{}]|(?<rec>\{(?:[^{}]|\\k<rec>)*\}))*\}/g);
-  if (match) {
-    for (const block of match) {
-      const obj = safeParseJson(block);
+  const blocks = raw.match(/\{(?:[^{}]|(?<rec>\{(?:[^{}]|\k<rec>)*\}))*\}/g);
+  if (blocks) {
+    for (const b of blocks) {
+      const obj = safeParseJson(b);
       if (obj?.files) return obj.files;
     }
   }
@@ -162,7 +175,8 @@ function safeParseJson(str) {
 }
 
 /**
- * Genera un site mínim (per quan no tenim clau o OpenAI falla).
+ * Generació mínima per quan l’API falla o no hi ha clau.
+ * Manté estructura i punts d’injecció perquè l’edició local funcioni.
  */
 function generateServer(name, prompt) {
   const title = String(name || 'Project Central').slice(0, 80);
@@ -215,7 +229,7 @@ function generateServer(name, prompt) {
   </main>
   <footer>© ${new Date().getFullYear()} Project Central</footer>
   <script>
-  // scroll suau
+  // Scroll suau
   document.querySelectorAll('a[href^="#"]').forEach(a=>{
     a.addEventListener('click',e=>{
       const id=a.getAttribute('href').slice(1);
@@ -238,7 +252,8 @@ function generateServer(name, prompt) {
 }
 
 /**
- * Edita l'index.html local de forma simple i segura (sense OpenAI).
+ * Edició local “segura” (quan l’API falla o per accelerar respostes).
+ * Manté index.html i injecta contingut en seccions o al marcador <!-- IA_EDIT -->.
  */
 function localEditServer(files, prompt = '') {
   const out = { ...files };
@@ -249,7 +264,7 @@ function localEditServer(files, prompt = '') {
   }
 
   let inject = '';
-  const p = prompt.toLowerCase();
+  const p = String(prompt).toLowerCase();
 
   if (p.includes('contacte') || p.includes('contact')) {
     inject =
@@ -258,6 +273,10 @@ function localEditServer(files, prompt = '') {
   } else if (p.includes('preu') || p.includes('pricing') || p.includes('precios')) {
     inject =
       '<section id="pricing"><h2>Preus</h2><ul><li>Starter</li><li>Pro</li><li>Enterprise</li></ul></section>';
+    out['index.html'] = injectAfterMarker(html, 'IA_EDIT', inject);
+  } else if (p.includes('testimoni') || p.includes('testimonial')) {
+    inject =
+      '<section id="testimonials"><h2>Testimonis</h2><blockquote>[IA] Nova ressenya afegida.</blockquote></section>';
     out['index.html'] = injectAfterMarker(html, 'IA_EDIT', inject);
   } else {
     inject = `<p class="ia-note">[IA] Canvi simple aplicat: ${escapeHtml(
@@ -282,7 +301,7 @@ function injectIntoSection(html, sectionId, fragment) {
 function injectAfterMarker(html, marker, fragment) {
   const m = `<!-- ${marker} -->`;
   if (html.includes(m)) return html.replace(m, `${m}\n${fragment}\n`);
-  // si no hi ha marcador, l'afegim abans del tancament de main
+  // si no hi ha marcador, l'afegim abans del tancament de <main>
   return html.replace(/<\/main>/i, `${fragment}\n</main>`);
 }
 
@@ -294,4 +313,3 @@ function escapeHtml(s) {
     .replaceAll('"', '&quot;')
     .replaceAll("'", '&#39;');
 }
-
