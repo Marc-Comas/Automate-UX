@@ -5,32 +5,29 @@ const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'POST,OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type,x-openai-key,x-openai-asst',
+  'Cache-Control': 'no-cache',
 };
 
 export default async (req) => {
   // Preflight
-  if (req.method === 'OPTIONS') {
-    return new Response(null, { status: 204, headers: CORS });
-  }
-  if (req.method !== 'POST') {
-    return json({ ok: false, error: 'Method not allowed' }, 405);
-  }
+  if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
+  if (req.method !== 'POST') return json({ ok: false, error: 'Method not allowed' }, 405);
 
   try {
     const body = await req.json().catch(() => ({}));
     const { mode = 'edit', name = 'project', prompt = '', files = {} } = body;
 
-    // Claus (headers en local, variables en prod)
+    // Claus (header en local o var d’entorn en prod)
     const apiKey =
       req.headers.get('x-openai-key') || process.env.OPENAI_API_KEY || '';
     const openaiProject = process.env.OPENAI_PROJECT || '';
     const openaiOrg = process.env.OPENAI_ORG_ID || '';
     const model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
 
-    // Assegurem fitxers base
+    // Assegura fitxers
     const current = normalizeFiles(files);
 
-    // --- Anti-504: límit dur < 26s (Netlify) ---
+    // ----- Anti-504: timeout curt (Netlify talla ~26s) -----
     const timeoutMs = 23000;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort('timeout'), timeoutMs);
@@ -39,27 +36,26 @@ export default async (req) => {
     let filesFromAI = null;
 
     if (apiKey) {
-      // ---------- OpenAI (Responses API) amb timeout ----------
-      // (compacte + format JSON estricte)
+      // ---------- OpenAI /chat/completions amb JSON estricte ----------
       const system = [
         'You are a meticulous code editor for small web projects.',
         'Return ONLY a strict JSON object exactly like: {"files":{"index.html":"...","styles/style.css":"...","scripts/app.js":"..."}}',
-        'Do not add markdown, code fences, or explanations.',
-        'If in doubt, keep structure/accessibility and return valid HTML/CSS/JS.'
+        'No markdown, no code fences, no commentary. Valid HTML/CSS/JS only.',
       ].join(' ');
+
+      const messages = [
+        { role: 'system', content: system },
+        { role: 'user', content: `MODE: ${mode}\nPROJECT: ${name}\nPROMPT:\n${prompt}` },
+        { role: 'user', content: `index.html:\n${current['index.html']}` },
+        { role: 'user', content: `styles/style.css:\n${current['styles/style.css']}` },
+        { role: 'user', content: `scripts/app.js:\n${current['scripts/app.js']}` },
+      ];
 
       const payload = {
         model,
         temperature: 0.2,
         response_format: { type: 'json_object' },
-        input: [
-          { role: 'system', content: system },
-          { role: 'user', content: `MODE: ${mode}\nPROJECT: ${name}\nPROMPT:\n${prompt}` },
-          // passem els continguts actuals de forma austera
-          { role: 'user', content: `index.html:\n${current['index.html']}` },
-          { role: 'user', content: `styles/style.css:\n${current['styles/style.css']}` },
-          { role: 'user', content: `scripts/app.js:\n${current['scripts/app.js']}` }
-        ]
+        messages,
       };
 
       const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` };
@@ -67,7 +63,7 @@ export default async (req) => {
       if (openaiOrg) headers['OpenAI-Organization'] = openaiOrg;
 
       try {
-        const resp = await fetch('https://api.openai.com/v1/responses', {
+        const resp = await fetch('https://api.openai.com/v1/chat/completions', {
           method: 'POST',
           headers,
           body: JSON.stringify(payload),
@@ -75,27 +71,26 @@ export default async (req) => {
         });
         upstreamStatus = resp.status;
 
-        const txt = await resp.text(); // pot no ser JSON “net”
-        let data = null;
-        try { data = txt ? JSON.parse(txt) : null; } catch { data = null; }
-
-        filesFromAI = extractFilesFromOpenAI(data);
+        const data = await resp.json().catch(() => null);
+        const content = data?.choices?.[0]?.message?.content || '';
+        const parsed = safeParseJson(content);
+        if (parsed?.files) filesFromAI = parsed.files;
       } catch {
-        // timeout/abort o xarxa → seguirà fallback
+        // timeout o xarxa → seguirem amb fallback
         filesFromAI = null;
       } finally {
         clearTimeout(timer);
       }
     } else {
-      clearTimeout(timer); // no tenim clau: passem directament al fallback
+      clearTimeout(timer);
     }
 
-    // Si l'IA ha retornat fitxers vàlids (amb index.html), utilitza'ls
+    // Si l’IA ha tornat fitxers vàlids, endavant
     if (isValidFiles(filesFromAI)) {
       return json({ ok: true, files: filesFromAI });
     }
 
-    // ---------- Fallback intel·ligent (sense eco del prompt) ----------
+    // ---------- Fallback “intel·ligent” amb accions bàsiques ----------
     const fallbackFiles = applyLocalEditFallback(current, prompt);
 
     return json({
@@ -105,7 +100,6 @@ export default async (req) => {
       upstream_status: upstreamStatus || undefined,
     });
   } catch (err) {
-    // Últim recurs: mai 504
     return json({ ok: false, error: String(err?.message || err) }, 500);
   }
 };
@@ -130,70 +124,54 @@ function isValidFiles(obj) {
   return Object.keys(obj).every((k) => typeof obj[k] === 'string');
 }
 
-/* --------- Extracció robusta de {files:{...}} de Responses API --------- */
-function extractFilesFromOpenAI(data) {
-  if (!data) return null;
+function safeParseJson(str) { try { return JSON.parse(str); } catch { return null; } }
 
-  // 1) output_text directe
-  if (typeof data.output_text === 'string') {
-    const obj = safeParseJson(data.output_text);
-    if (obj?.files) return obj.files;
-  }
-
-  // 2) output (array) amb parts {text|value}
-  if (Array.isArray(data.output)) {
-    for (const chunk of data.output) {
-      const parts = Array.isArray(chunk?.content) ? chunk.content : [];
-      for (const p of parts) {
-        const candidate =
-          typeof p?.text === 'string'
-            ? p.text
-            : typeof p?.value === 'string'
-            ? p.value
-            : null;
-        if (candidate) {
-          const obj = safeParseJson(candidate);
-          if (obj?.files) return obj.files;
-        }
-      }
-    }
-  }
-
-  // 3) “rascar” JSON d’emergència
-  const raw = JSON.stringify(data);
-  const match = raw.match(/\{(?:[^{}]|(?<rec>\{(?:[^{}]|\k<rec>)*\}))*\}/g);
-  if (match) {
-    for (const block of match) {
-      const obj = safeParseJson(block);
-      if (obj?.files) return obj.files;
-    }
-  }
-  return null;
-}
-
-function safeParseJson(str) {
-  try { return JSON.parse(str); } catch { return null; }
-}
-
-/* ---------------------- Fallback local “intel·ligent” ---------------------- */
-/* (adapta el contingut per seccions, ca/es, sense eco literal del prompt)   */
-/* Basat en el teu fallback bo del fitxer nou.                                */
+/* ---------------------- Fallback local ampliat ---------------------- */
 
 function applyLocalEditFallback(files, promptRaw) {
   const prompt = String(promptRaw || '');
   const html0 = files['index.html'];
   const lang = detectLang(html0); // 'ca' | 'es'
-  const sectionId = findTargetSection(prompt) || findSingleSectionInHTML(html0) || 'contact';
   const email = extractEmail(html0) || 'info@example.com';
 
-  // Bloc de contingut segons secció (NO enganxa el prompt)
-  const block = buildSectionBlock(sectionId, lang, prompt, email);
+  // Detecta acció i secció (simple)
+  const { action, sectionId } = detectActionAndSection(prompt) ?? { action: 'add', sectionId: findSingleSectionInHTML(html0) || 'contact' };
 
-  // Inserim al final de la secció trobada (o abans de </main>)
-  let html = insertIntoSection(html0, sectionId, block, prompt);
-
-  // Estils per als blocs generats
+  let html = html0;
   let css = files['styles/style.css'] || '/* css */';
+
+  if (sectionId === 'testimonials') {
+    if (action === 'remove') {
+      html = removeLastTestimonial(html);
+    } else if (action === 'replace') {
+      html = removeLastTestimonial(html);
+      html = insertIntoSection(html, 'testimonials', testimonialBlock(lang), prompt);
+    } else {
+      html = insertIntoSection(html, 'testimonials', testimonialBlock(lang), prompt);
+    }
+  } else if (sectionId === 'contact') {
+    if (action === 'remove') {
+      html = stripAIBlocks(html, 'ai-contact');
+    } else {
+      html = insertIntoSection(html, 'contact', contactBlock(lang, email), prompt);
+    }
+  } else if (sectionId === 'faq') {
+    if (action === 'remove') {
+      html = stripAIBlocks(html, 'ai-faq');
+    } else {
+      html = insertIntoSection(html, 'faq', faqBlock(lang, prompt), prompt);
+    }
+  } else if (sectionId === 'pricing') {
+    if (action === 'remove') {
+      html = stripAIBlocks(html, 'ai-pricing');
+    } else {
+      html = insertIntoSection(html, 'pricing', pricingBlock(lang), prompt);
+    }
+  } else {
+    // genèric: afegeix bloc informatiu
+    html = insertIntoSection(html, sectionId, genericNote(lang), prompt);
+  }
+
   css = ensureAIStyles(css);
 
   return {
@@ -210,7 +188,6 @@ function detectLang(html) {
   if (code.startsWith('es')) return 'es';
   return 'es';
 }
-
 function extractEmail(html) {
   const m1 = /mailto:([^\s"'<>]+)/i.exec(html);
   if (m1) return m1[1];
@@ -219,22 +196,34 @@ function extractEmail(html) {
   return null;
 }
 
-function findTargetSection(prompt) {
-  const p = prompt.toLowerCase();
-  const map = [
+function detectActionAndSection(promptRaw) {
+  const p = String(promptRaw || '').toLowerCase();
+  if (!p) return null;
+
+  const sectionMap = [
     { id: 'testimonials', keys: ['testimon', 'reseña', 'review'] },
     { id: 'contact', keys: ['contact', 'contacte', 'contacto', 'email', 'tel'] },
     { id: 'faq', keys: ['faq', 'preguntes', 'preguntas', 'frecuentes'] },
     { id: 'pricing', keys: ['pricing', 'precio', 'preu', 'planes', 'plan'] },
-    { id: 'gallery', keys: ['galeria', 'galería', 'gallery', 'carrusel', 'imagenes', 'imatges'] },
+    { id: 'gallery', keys: ['galeria', 'galería', 'gallery'] },
     { id: 'about', keys: ['sobre', 'about', 'qui som', 'quiénes'] },
     { id: 'features', keys: ['caracter', 'feature', 'benefici', 'beneficio'] },
     { id: 'hero', keys: ['hero', 'encabezado', 'capçalera', 'headline', 'cta'] },
   ];
-  for (const item of map) {
-    if (item.keys.some((k) => p.includes(k))) return item.id;
-  }
-  return null;
+  const actionMap = [
+    { id: 'remove', keys: ['elimina', 'remove', 'borra', 'suprimeix', 'quita', 'delete'] },
+    { id: 'replace', keys: ['reemplaza', 'replace', 'substitueix', 'sustituye'] },
+    { id: 'add', keys: ['añade', 'afegeix', 'agrega', 'add'] },
+  ];
+
+  let sectionId = null;
+  for (const s of sectionMap) if (s.keys.some(k => p.includes(k))) { sectionId = s.id; break; }
+  if (!sectionId) return null;
+
+  let action = 'add';
+  for (const a of actionMap) if (a.keys.some(k => p.includes(k))) { action = a.id; break; }
+
+  return { action, sectionId };
 }
 
 function findSingleSectionInHTML(html) {
@@ -244,8 +233,9 @@ function findSingleSectionInHTML(html) {
   return null;
 }
 
+function sanitizeAttr(s) { return String(s).replace(/[<>"']/g, ''); }
 function insertIntoSection(html, sectionId, block, prompt) {
-  const comment = `<!-- ai: inserted section="${sectionId}" prompt="${sanitizeAttr(prompt.slice(0,160))}${prompt.length>160?'…':''}" -->`;
+  const comment = `<!-- ai: inserted section="${sectionId}" prompt="${sanitizeAttr(String(prompt).slice(0,160))}${String(prompt).length>160?'…':''}" -->`;
   const sectionClose = new RegExp(`(<section[^>]*id=["']${sectionId}["'][\\s\\S]*?)(</section>)`, 'i');
   if (sectionClose.test(html)) {
     return html.replace(sectionClose, (_m, body, close) => `${body}\n${comment}\n${block}\n${close}`);
@@ -257,20 +247,27 @@ function insertIntoSection(html, sectionId, block, prompt) {
   return html.replace(/<\/body>/i, `${comment}\n${block}\n</body>`);
 }
 
-function sanitizeAttr(s) { return String(s).replace(/[<>"']/g, ''); }
+function stripAIBlocks(html, klass) {
+  const re = new RegExp(
+    `<(?:div|p|figure|ul|details)[^>]*class=["'][^"']*\\b${klass}\\b[^"']*["'][\\s\\S]*?<\\/(?:div|p|figure|ul|details)>`,
+    'ig'
+  );
+  return html.replace(re, '');
+}
 
-function buildSectionBlock(sectionId, lang, prompt, email) {
-  switch (sectionId) {
-    case 'testimonials': return testimonialBlock(lang);
-    case 'contact':      return contactBlock(lang, email);
-    case 'faq':          return faqBlock(lang, prompt);
-    case 'pricing':      return pricingBlock(lang);
-    case 'gallery':      return galleryBlock(lang, prompt);
-    case 'about':        return aboutBlock(lang);
-    case 'features':     return featuresBlock(lang);
-    case 'hero':         return heroBlock(lang);
-    default:             return genericNote(lang);
-  }
+function removeLastTestimonial(html) {
+  // Busca l’últim bloc testimonial (AI o existent) dins la secció testimonis
+  const sectionRe = /(<section[^>]*id=["']testimonials["'][\s\S]*?<\/section>)/i;
+  const match = html.match(sectionRe);
+  if (!match) return html;
+
+  const sec = match[1];
+  const figs = [...sec.matchAll(/<figure[^>]*class=["'][^"']*testimon[^"']*["'][\s\S]*?<\/figure>/ig)];
+  if (!figs.length) return html;
+
+  const last = figs[figs.length - 1][0];
+  const secNew = sec.replace(last, '');
+  return html.replace(sectionRe, secNew);
 }
 
 function testimonialBlock(lang) {
@@ -329,41 +326,6 @@ function pricingBlock(lang) {
   </div>`.trim();
 }
 
-function galleryBlock(lang, prompt) {
-  const alt = (lang === 'ca') ? 'Imatge de projecte' : 'Imagen de proyecto';
-  const caption = (lang === 'ca') ? 'Nou muntatge en acció' : 'Nuevo montaje en acción';
-  const seed = encodeURIComponent(guessTopic(prompt, lang) || 'projecte');
-  return `
-  <figure class="ai-block ai-gallery">
-    <img src="https://picsum.photos/seed/${seed}/800/450" alt="${alt}" loading="lazy" decoding="async">
-    <figcaption>${caption}</figcaption>
-  </figure>`.trim();
-}
-
-function aboutBlock(lang) {
-  const text = (lang === 'ca')
-    ? 'Dissenyem murs d’escalada modulars i gamificats amb un enfocament sostenible i escalable.'
-    : 'Diseñamos muros de escalada modulares y gamificados con un enfoque sostenible y escalable.';
-  return `<p class="ai-block ai-about">${text}</p>`;
-}
-
-function featuresBlock(lang) {
-  const t = (lang === 'ca')
-    ? ['Mòduls connectables', 'Sensors de moviment', 'Aplicació d’anàlisi inclosa']
-    : ['Módulos conectables', 'Sensores de movimiento', 'App de análisis incluida'];
-  return `
-  <ul class="ai-block ai-features">
-    <li>${t[0]}</li>
-    <li>${t[1]}</li>
-    <li>${t[2]}</li>
-  </ul>`.trim();
-}
-
-function heroBlock(lang) {
-  const sub = (lang === 'ca') ? 'Experiència urbana, energia de comunitat.' : 'Experiencia urbana, energía de comunidad.';
-  return `<p class="ai-block ai-hero-sub">${sub}</p>`;
-}
-
 function genericNote(lang) {
   const t = (lang === 'ca') ? 'Contingut actualitzat automàticament.' : 'Contenido actualizado automáticamente.';
   return `<p class="ai-block">${t}</p>`;
@@ -374,7 +336,7 @@ function guessTopic(prompt, lang) {
   if (!p) return (lang === 'ca') ? 'el sistema' : 'el sistema';
   const just = p
     .replace(/["«»“”]/g, '')
-    .replace(/\b(afeg(eix|ir)|añade|agrega|add|más|més|sección|seccio|section|testimoni(?:s)?|reseña(?:s)?|review(?:s)?|contacte|contacto|faq|pricing|precios|galeria|galería|gallery)\b/gi, '')
+    .replace(/\b(afeg(eix|ir)|añade|agrega|add|más|més|sección|seccio|section|testimoni(?:s)?|reseña(?:s)?|review(?:s)?|contacte|contacto|faq|pricing|precios|galeria|galería|gallery|elimina|remove|borra|suprimeix|quita|reemplaza|replace|sustituye|substitueix)\b/gi, '')
     .replace(/\s+/g, ' ')
     .trim();
   if (!just) return (lang === 'ca') ? 'el sistema' : 'el sistema';
