@@ -4,11 +4,12 @@ export const handler = async (event) => {
     const { id, name, files } = JSON.parse(event.body || '{}');
     if (!files || typeof files !== 'object') return j(400, { error: 'Faltan files' });
 
-    const token = process.env.GITHUB_TOKEN;
-    const owner = process.env.GH_OWNER;
-    const repo = process.env.GH_REPO;
-    const branch = process.env.GH_BRANCH || 'main';
-    if (!token || !owner || !repo) return j(400, { error: 'Config GitHub incompleta (GITHUB_TOKEN, GH_OWNER, GH_REPO)' });
+    // Accept both "GITHUB_*" and "GH_*" env variables for flexibility
+    const token  = process.env.GITHUB_TOKEN  || process.env.GH_TOKEN;
+    const owner  = process.env.GH_OWNER      || process.env.GITHUB_OWNER;
+    const repo   = process.env.GH_REPO       || process.env.GITHUB_REPO;
+    const branch = process.env.GH_BRANCH     || process.env.GITHUB_BRANCH || 'main';
+    if (!token || !owner || !repo) return j(400, { error: 'Config GitHub incompleta (token/owner/repo)' });
 
     const results = [];
     for (const [path, content] of Object.entries(files)) {

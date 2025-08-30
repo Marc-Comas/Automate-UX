@@ -77,11 +77,11 @@ export async function handler(event) {
   try {
     const { project, files } = JSON.parse(event.body || '{}');
 
-    // Llegeix credencials (DATA > per defecte)
-    const owner  = process.env.GH_DATA_OWNER   || process.env.GH_OWNER;
-    const repo   = process.env.GH_DATA_REPO    || process.env.GH_REPO;
-    const branch = process.env.GH_DATA_BRANCH  || 'main';
-    const token  = process.env.GITHUB_DATA_TOKEN || process.env.GITHUB_TOKEN;
+    // Llegeix credencials. Prioritzem variables DATA i proporcionem múltiples fallbacks per coherència amb altres funcions.
+    const owner  = process.env.GH_DATA_OWNER   || process.env.GITHUB_OWNER  || process.env.GH_OWNER;
+    const repo   = process.env.GH_DATA_REPO    || process.env.GITHUB_DATA_REPO || process.env.GITHUB_REPO || process.env.GH_REPO;
+    const branch = process.env.GH_DATA_BRANCH  || process.env.GITHUB_DATA_BRANCH || process.env.GH_BRANCH || 'main';
+    const token  = process.env.GITHUB_DATA_TOKEN || process.env.GH_DATA_TOKEN || process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
 
     if (!owner || !repo || !token) {
       return error(400, 'Missing GitHub credentials (owner/repo/token)');
@@ -93,13 +93,26 @@ export async function handler(event) {
 
     const prefix = `projects/${slug}`;
 
-    // Recull només fitxers amb contingut
-    const candidates = [
-      ['index.html',           files?.['index.html']],
-      ['styles/style.css',     files?.['styles/style.css']],
-      ['scripts/app.js',       files?.['scripts/app.js']]
-    ].filter(([, content]) => typeof content === 'string' && content.trim() !== '');
+    // Construïm l'array de fitxers a desar. Afegim meta.json amb les metadades del projecte
+    const candidates = [];
+    // index.html, css, js
+    const indexFile = files?.['index.html'];
+    const cssFile   = files?.['styles/style.css'];
+    const jsFile    = files?.['scripts/app.js'];
+    if (typeof indexFile === 'string' && indexFile.trim() !== '') candidates.push(['index.html', indexFile]);
+    if (typeof cssFile   === 'string' && cssFile.trim()   !== '') candidates.push(['styles/style.css', cssFile]);
+    if (typeof jsFile    === 'string' && jsFile.trim()    !== '') candidates.push(['scripts/app.js', jsFile]);
 
+    // Afegeix meta.json per desar metadades mínimes del projecte
+    const meta = { ...project };
+    delete meta.files;
+    // Si no hi ha camp id/slug, assigna el slug calculat per coherència
+    if (!meta.id) meta.id = slug;
+    if (!meta.slug) meta.slug = slug;
+    const metaContent = JSON.stringify(meta, null, 2);
+    candidates.push(['meta.json', metaContent]);
+
+    // Si no hi ha cap fitxer, finalitza ràpid
     if (candidates.length === 0) {
       return ok({ ok: true, results: [{ id: project.id, name: project.name, skipped: true, reason: 'empty_files' }] });
     }

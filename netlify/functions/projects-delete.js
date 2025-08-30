@@ -129,9 +129,8 @@ exports.handler = async (event) => {
 
     return ok({ ok: true, id: slug, deleted, results });
   } catch (err) {
-    return json(500, { error: "server_error", details: String(err && err.message || err) });
+    // Any runtime errors will be returned as a structured JSON error
+    return json(500, { error: "server_error", details: String((err && err.message) || err) });
   }
 };
 
-  } catch (err) { return server(err); }
-};
