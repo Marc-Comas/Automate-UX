@@ -17,11 +17,23 @@ export async function handler(event) {
     const { mode = 'edit', prompt = '', name = 'project', files = {} } = safeParse(event.body);
     const current = normalizeFiles(files);
 
+    // Obté API key i identificadors d'assistent des de l'encapçalament per a dev local, o variables d'entorn en prod.
+    const hdrs = event.headers || {};
+    // Les capçaleres són insensibles a majúscules
+    const headerKey = Object.keys(hdrs).find(k => k.toLowerCase() === 'x-openai-key');
+    const headerAsst = Object.keys(hdrs).find(k => k.toLowerCase() === 'x-openai-asst');
+    const apiKeyFromHeader = headerKey ? hdrs[headerKey] : undefined;
+    const asstFromHeader   = headerAsst ? hdrs[headerAsst] : undefined;
+
+    const apiKey   = apiKeyFromHeader || process.env.OPENAI_API_KEY;
+    const model    = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+    const assistant= asstFromHeader  || process.env.OPENAI_ASSISTANT_ID;
+
     // 1) Prova OpenAI amb límit curt i resposta estricta JSON
-    const canAI = !!(process.env.OPENAI_API_KEY && (process.env.OPENAI_ASSISTANT_ID || process.env.OPENAI_MODEL));
+    const canAI = !!(apiKey && (assistant || model));
     if (canAI) {
       try {
-        const aiFiles = await tryOpenAIEdit({ mode, prompt, name, files: current });
+        const aiFiles = await tryOpenAIEdit({ mode, prompt, name, files: current, apiKey, model, assistant });
         if (isFiles(aiFiles)) return json(200, { ok: true, files: aiFiles });
       } catch {
         // seguim a fallback
@@ -44,7 +56,8 @@ function json(status, payload) {
       'Content-Type': 'application/json; charset=utf-8',
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'POST,OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type,Authorization'
+      // Permet headers personalitzats per a clau d'OpenAI en desenvolupament
+      'Access-Control-Allow-Headers': 'Content-Type,Authorization,x-openai-key,x-openai-asst'
     },
     body: JSON.stringify(payload)
   };
@@ -78,9 +91,14 @@ function defaultIndex() {
 }
 
 // ------------------------------ OpenAI --------------------------------------
-async function tryOpenAIEdit({ mode, prompt, name, files }) {
-  const API = process.env.OPENAI_API_KEY;
-  const model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+// Try to call OpenAI's chat completions (or assistant) to edit/create files.
+// Accepts explicit API key, model and assistant so that callers can override
+// environment variables (useful for local development via headers). If no
+// apiKey is provided we fall back to environment variables. The assistant
+// parameter is currently unused but included for future extensibility.
+async function tryOpenAIEdit({ mode, prompt, name, files, apiKey, model, assistant }) {
+  const API = apiKey || process.env.OPENAI_API_KEY;
+  const modelName = model || process.env.OPENAI_MODEL || 'gpt-4o-mini';
 
   // Missatges i format estrictes
   const system = [
@@ -110,7 +128,7 @@ async function tryOpenAIEdit({ mode, prompt, name, files }) {
       'Content-Type': 'application/json'
     },
     body: JSON.stringify({
-      model,
+      model: modelName,
       response_format: { type: 'json_object' },
       temperature: 0.2,
       messages: [
