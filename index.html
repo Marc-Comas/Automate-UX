@@ -446,11 +446,17 @@ function wireNewForm(){
     const slug=slugify(name); const id=uuid();
     let files;
     try{
-      // Primer generador: mode "create" per indicar a la IA que cree un sitio completo. Al faltar files, se enviará {}.
+      // Primer generador: mode "create" per indicar a la IA que cree un sitio complet.
       const r=await fetch('/.netlify/functions/generate',{method:'POST',headers:buildOpenAIHeaders(),body:JSON.stringify({ mode:'create', prompt, name, files:{} })});
-      const data=await r.json(); if(!r.ok) throw new Error(data.error||'Error de generación'); files = data.files;
+      const data=await r.json();
+      // Si la funció IA falla (HTTP no OK) o retorna una nota de fallback → llença per caure al local
+      if(!r.ok || !data.files || data.note){ throw new Error(data.error||data.note||'Error de generación'); }
+      files = data.files;
     }catch(err){
       files = generateSite({name,prompt}).files;
+      // Mostra una notificació bàsica informant que s'ha utilitzat el fallback local
+      info.hidden=false;
+      info.textContent='Generado con fallback local debido a un problema con la IA.';
     }
     const proj={id,name,slug,desc,status:'generated',files,createdAt:Date.now(),updatedAt:Date.now()};
     await upsertProject(proj);
@@ -521,11 +527,19 @@ async function renderPreview(params){
       const prompt = ($('#pv-prompt').value||'').trim(); if(!prompt) throw new Error('Escribe un prompt');
       const r = await fetch('/.netlify/functions/generate', { method:'POST', headers: buildOpenAIHeaders(), body: JSON.stringify({ mode:'edit', prompt, name: proj.name, files: proj.files }) });
       const data = await r.json();
-      if(!r.ok || !data.files) throw new Error(data.error||'La función no devolvió archivos');
+      // Si la IA retorna nota de fallback o no genera arxius vàlids, considerem-ho error
+      if(!r.ok || !data.files || data.note){ throw new Error(data.error || data.note || 'La función no devolvió archivos'); }
       const updated = {...proj, files: data.files, status:'edited', updatedAt: Date.now()};
       await upsertProject(updated);
       renderPreview(new URLSearchParams(`id=${encodeURIComponent(getProjectKey(proj))}`)); pvInfo.textContent='Cambios aplicados (IA).';
-    }catch(err){ pvInfo.hidden=true; pvErr.hidden=false; pvErr.textContent='Error: '+(err.message||''); }
+    }catch(err){
+      pvInfo.hidden=true; pvErr.hidden=false;
+      // Si se detecta un fallback, informa claramente al usuario
+      const msg = (err.message && /openai_error_fallback/.test(err.message))
+        ? 'La IA falló y se activó el fallback. Ajusta tu prompt o revisa tu API key.'
+        : ('Error: '+(err.message||''));
+      pvErr.textContent=msg;
+    }
   };
   $('#pv-apply-local').onclick = ()=>{
     const txt = ($('#pv-prompt').value||'').trim();
