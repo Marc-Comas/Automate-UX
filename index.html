@@ -209,13 +209,6 @@ async function apiListProjects(){
     return { ...x, id, slug: x.slug || id, name };
   });
 }
-
-// Helper robust per a llegir JSON (evita "Unexpected end of JSON input")
-async function readJsonSafe(res) {
-  const text = await res.text();
-  try { return JSON.parse(text); } catch { return {}; }
-}
-
 async function apiGetProject(id){
   const r = await fetch('/.netlify/functions/projects-get?id='+encodeURIComponent(id));
   const data = await r.json().catch(()=>({}));
@@ -295,8 +288,30 @@ function renderProjects(){
     if(action==='zip'){
       const blob=makeZip(proj.files||{}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`${(proj.name||proj.slug||'site')}.zip`; a.click(); URL.revokeObjectURL(a.href);
     }
-    if(action==='push'){ alert('Push a GitHub: usa tu función existente (sin cambios).'); }
-    if(action==='deploy-real'){ alert('Trigger Netlify: usa tu función existente (sin cambios).'); }
+    if(action==='push'){
+      // Realiza push de los archivos del proyecto al repositorio GitHub configurado mediante la función serverless
+      if(!proj.files || Object.keys(proj.files).length === 0){ alert('No hay archivos para subir'); return; }
+      const confirmMsg = '¿Subir este proyecto al repositorio de GitHub configurado?';
+      if(!confirm(confirmMsg)) return;
+      const body = { id: id, name: proj.name || proj.slug || id, files: proj.files };
+      try {
+        const r = await fetch('/.netlify/functions/push-to-github', { method:'POST', headers:{ 'Content-Type':'application/json' }, body: JSON.stringify(body) });
+        const data = await r.json().catch(() => ({}));
+        if(!r.ok || !data.ok){ throw new Error(data.error || 'Error durante el push'); }
+        alert('Push a GitHub completado.');
+      } catch(err){ alert('Fallo al subir a GitHub: '+(err.message||'')); }
+    }
+    if(action==='deploy-real'){
+      // Invoca el build hook de Netlify para desplegar el sitio.
+      const confirmMsg = '¿Ejecutar el deploy en Netlify? Este proceso puede tardar unos minutos.';
+      if(!confirm(confirmMsg)) return;
+      try {
+        const r = await fetch('/.netlify/functions/trigger-deploy', { method:'POST' });
+        const data = await r.json().catch(() => ({}));
+        if(!r.ok || !data.ok){ throw new Error(data.error || 'Error en el deploy'); }
+        alert('Build trigger enviado a Netlify.');
+      } catch(err){ alert('Fallo al lanzar el deploy: '+(err.message||'')); }
+    }
     if(action==='delete'){
       if(confirm('¿Seguro que quieres borrar este proyecto?')){ await deleteProject(getProjectKey(proj)); renderProjects(); }
     }
@@ -431,7 +446,8 @@ function wireNewForm(){
     const slug=slugify(name); const id=uuid();
     let files;
     try{
-      const r=await fetch('/.netlify/functions/generate',{method:'POST',headers:buildOpenAIHeaders(),body:JSON.stringify({prompt,name})});
+      // Primer generador: mode "create" per indicar a la IA que cree un sitio completo. Al faltar files, se enviará {}.
+      const r=await fetch('/.netlify/functions/generate',{method:'POST',headers:buildOpenAIHeaders(),body:JSON.stringify({ mode:'create', prompt, name, files:{} })});
       const data=await r.json(); if(!r.ok) throw new Error(data.error||'Error de generación'); files = data.files;
     }catch(err){
       files = generateSite({name,prompt}).files;
@@ -504,11 +520,8 @@ async function renderPreview(params){
     try{
       const prompt = ($('#pv-prompt').value||'').trim(); if(!prompt) throw new Error('Escribe un prompt');
       const r = await fetch('/.netlify/functions/generate', { method:'POST', headers: buildOpenAIHeaders(), body: JSON.stringify({ mode:'edit', prompt, name: proj.name, files: proj.files }) });
-      const data = await readJsonSafe(r);
-      if(!r.ok || !data.ok || !data.files){
-      throw new Error((data && data.error) || 'IA indisponible');
-      }
-      files = data.files;
+      const data = await r.json();
+      if(!r.ok || !data.files) throw new Error(data.error||'La función no devolvió archivos');
       const updated = {...proj, files: data.files, status:'edited', updatedAt: Date.now()};
       await upsertProject(updated);
       renderPreview(new URLSearchParams(`id=${encodeURIComponent(getProjectKey(proj))}`)); pvInfo.textContent='Cambios aplicados (IA).';
