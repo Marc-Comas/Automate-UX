@@ -209,6 +209,13 @@ async function apiListProjects(){
     return { ...x, id, slug: x.slug || id, name };
   });
 }
+
+// Helper robust per a llegir JSON (evita "Unexpected end of JSON input")
+async function readJsonSafe(res) {
+  const text = await res.text();
+  try { return JSON.parse(text); } catch { return {}; }
+}
+
 async function apiGetProject(id){
   const r = await fetch('/.netlify/functions/projects-get?id='+encodeURIComponent(id));
   const data = await r.json().catch(()=>({}));
@@ -497,8 +504,11 @@ async function renderPreview(params){
     try{
       const prompt = ($('#pv-prompt').value||'').trim(); if(!prompt) throw new Error('Escribe un prompt');
       const r = await fetch('/.netlify/functions/generate', { method:'POST', headers: buildOpenAIHeaders(), body: JSON.stringify({ mode:'edit', prompt, name: proj.name, files: proj.files }) });
-      const data = await r.json();
-      if(!r.ok || !data.files) throw new Error(data.error||'La función no devolvió archivos');
+      const data = await readJsonSafe(r);
+      if(!r.ok || !data.ok || !data.files){
+      throw new Error((data && data.error) || 'IA indisponible');
+      }
+      files = data.files;
       const updated = {...proj, files: data.files, status:'edited', updatedAt: Date.now()};
       await upsertProject(updated);
       renderPreview(new URLSearchParams(`id=${encodeURIComponent(getProjectKey(proj))}`)); pvInfo.textContent='Cambios aplicados (IA).';
