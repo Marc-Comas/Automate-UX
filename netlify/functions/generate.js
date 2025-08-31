@@ -1,264 +1,198 @@
 // netlify/functions/generate.js
-// ESM — Netlify Functions (package.json té "type":"module")
+// ÚNICA implementación. Formato Netlify Functions (ESM) con "type":"module".
+// Política: NUNCA hacer cambios silenciosos si la IA falla. Si falla => 502.
+// Para “crear” puedes permitir fallback enviando allowFallback:true.
 
-// Config
-const OPENAI_TIMEOUT_MS = Number(process.env.GEN_AI_TIMEOUT_MS || 9000);
+const TIMEOUT_MS = 22000;
 
-// ----------------------------- Handler --------------------------------------
-export async function handler(event) {
+export const handler = async (event) => {
+  // CORS
+  if (event.httpMethod === 'OPTIONS') return j(204, {});
+  if (event.httpMethod !== 'POST') return j(405, { ok: false, error: 'Method not allowed' });
+
   try {
-    if (event.httpMethod === 'OPTIONS') {
-      return json(204, {});
-    }
-    if (event.httpMethod !== 'POST') {
-      return json(405, { ok: false, error: 'Method not allowed' });
-    }
+    const body = safeJson(event.body);
+    const {
+      mode = 'edit',                  // 'edit' | 'create'
+      name = 'project',
+      prompt = '',
+      files = {},
+      allowFallback = mode === 'create' // por defecto SOLO en creación
+    } = body;
 
-    const { mode = 'edit', prompt = '', name = 'project', files = {} } = safeParse(event.body);
+    const headers = event.headers || {};
+    const apiKey = headers['x-openai-key'] || headers['X-OpenAI-Key'] || process.env.OPENAI_API_KEY || '';
+    const openaiOrg = process.env.OPENAI_ORG_ID || '';
+    const openaiProject = process.env.OPENAI_PROJECT || '';
+    const model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+
+    // Asegura estructura mínima
     const current = normalizeFiles(files);
 
-    // Obté API key i identificadors d'assistent des de l'encapçalament per a dev local, o variables d'entorn en prod.
-    const hdrs = event.headers || {};
-    // Les capçaleres són insensibles a majúscules
-    const headerKey = Object.keys(hdrs).find(k => k.toLowerCase() === 'x-openai-key');
-    const headerAsst = Object.keys(hdrs).find(k => k.toLowerCase() === 'x-openai-asst');
-    const apiKeyFromHeader = headerKey ? hdrs[headerKey] : undefined;
-    const asstFromHeader   = headerAsst ? hdrs[headerAsst] : undefined;
+    // Timeout duro (Netlify corta ~26s)
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort('timeout'), TIMEOUT_MS);
 
-    const apiKey   = apiKeyFromHeader || process.env.OPENAI_API_KEY;
-    const model    = process.env.OPENAI_MODEL || 'gpt-4o-mini';
-    const assistant= asstFromHeader  || process.env.OPENAI_ASSISTANT_ID;
+    let aiFiles = null, upstream = 0, aiError = '';
 
-    // 1) Prova OpenAI amb límit curt i resposta estricta JSON
-    const canAI = !!(apiKey && (assistant || model));
-    if (canAI) {
+    if (apiKey) {
       try {
-        const aiFiles = await tryOpenAIEdit({ mode, prompt, name, files: current, apiKey, model, assistant });
-        if (isFiles(aiFiles)) return json(200, { ok: true, files: aiFiles });
-      } catch {
-        // seguim a fallback
+        const schema = {
+          name: 'files_payload',
+          strict: true,
+          schema: {
+            type: 'object',
+            additionalProperties: false,
+            properties: {
+              files: {
+                type: 'object',
+                description: 'Map of file paths to text content',
+                additionalProperties: { type: 'string' },
+                required: ['index.html']
+              }
+            },
+            required: ['files']
+          }
+        };
+
+        const system = [
+          'You are a meticulous web code editor for small static sites.',
+          'Return ONLY the JSON defined by the schema (no prose, no markdown).',
+          'Keep structure and accessibility. Avoid external scripts or remote CSS.'
+        ].join(' ');
+
+        const messages = [
+          { role: 'system', content: system },
+          {
+            role: 'user',
+            content: JSON.stringify({
+              mode, name, prompt,
+              files: {
+                'index.html': current['index.html'],
+                'styles/style.css': current['styles/style.css'],
+                'scripts/app.js': current['scripts/app.js']
+              }
+            })
+          }
+        ];
+
+        const reqHeaders = {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        };
+        if (openaiOrg) reqHeaders['OpenAI-Organization'] = openaiOrg;
+        if (openaiProject) reqHeaders['OpenAI-Project'] = openaiProject;
+
+        const resp = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          signal: ctrl.signal,
+          headers: reqHeaders,
+          body: JSON.stringify({
+            model,
+            temperature: 0.2,
+            response_format: { type: 'json_schema', json_schema: schema },
+            messages
+          })
+        });
+        upstream = resp.status;
+
+        const text = await resp.text();
+        let data = null; try { data = text ? JSON.parse(text) : null; } catch {}
+        const msg = data?.choices?.[0]?.message?.content;
+
+        if (!resp.ok) {
+          aiError = data?.error?.message || `openai_${resp.status}`;
+        } else if (!msg) {
+          aiError = 'ai_no_message';
+        } else {
+          let parsed = null; try { parsed = JSON.parse(msg); } catch { aiError = 'ai_inner_not_json'; }
+          const out = parsed?.files;
+          if (isFiles(out)) aiFiles = sanitizeFiles(out);
+          else aiError = 'ai_files_invalid';
+        }
+      } catch (e) {
+        aiError = String(e?.message || e);
+      } finally {
+        clearTimeout(to);
       }
+    } else {
+      clearTimeout(to);
+      aiError = 'missing_api_key';
     }
 
-    // 2) Fallback local ràpid i semàntic
-    const fb = applyLocalEditFallback(current, prompt);
-    return json(200, { ok: true, files: fb, note: 'openai_error_fallback', upstream_status: 400 });
-  } catch (err) {
-    return json(500, { ok: false, error: err?.message || String(err) });
-  }
-}
+    // Éxito IA
+    if (isFiles(aiFiles)) return j(200, { ok: true, files: aiFiles });
 
-// --------------------------- Helpers bàsics ----------------------------------
-function json(status, payload) {
+    // Sin IA válida → o devolvemos error (edit) o fallback (create si allowFallback)
+    if (!allowFallback || mode === 'edit') {
+      return j(502, { ok: false, error: 'ai_failed', details: aiError, upstream_status: upstream });
+    }
+
+    // Fallback sólo si está permitido
+    const fb = applyLocalEditFallback(current, prompt);
+    return j(200, { ok: true, files: fb, note: 'openai_error_fallback', upstream_status: upstream });
+
+  } catch (err) {
+    return j(500, { ok: false, error: err?.message || String(err) });
+  }
+};
+
+/* ---------------- Helpers básicos ---------------- */
+function j(status, payload) {
   return {
     statusCode: status,
     headers: {
       'Content-Type': 'application/json; charset=utf-8',
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'POST,OPTIONS',
-      // Permet headers personalitzats per a clau d'OpenAI en desenvolupament
-      'Access-Control-Allow-Headers': 'Content-Type,Authorization,x-openai-key,x-openai-asst'
+      'Access-Control-Allow-Headers': 'Content-Type,x-openai-key,x-openai-asst'
     },
     body: JSON.stringify(payload)
   };
 }
-function safeParse(x) { try { return JSON.parse(x || '{}'); } catch { return {}; } }
-function isFiles(obj) {
-  if (!obj || typeof obj !== 'object') return false;
-  if (!('index.html' in obj)) return false;
-  return Object.keys(obj).every(k => typeof obj[k] === 'string');
-}
-function normalizeFiles(input) {
-  const out = { ...input };
+function safeJson(x){ try{ return JSON.parse(x || '{}'); }catch{ return {}; } }
+function isFiles(obj){ return !!obj && typeof obj==='object' && 'index.html' in obj && Object.values(obj).every(v=>typeof v==='string'); }
+function normalizeFiles(input){
+  const out = { ...(input||{}) };
   if (typeof out['index.html'] !== 'string') out['index.html'] = defaultIndex();
   if (typeof out['styles/style.css'] !== 'string') out['styles/style.css'] = '/* css */';
   if (typeof out['scripts/app.js'] !== 'string') out['scripts/app.js'] = '// js';
   return out;
 }
-function defaultIndex() {
-  return `<!doctype html><html lang="ca"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Nou projecte</title><link rel="stylesheet" href="styles/style.css"></head>
-<body><header><h1>Nou projecte</h1></header>
-<main>
-  <section id="hero"><h2>Benvingut/da</h2></section>
-  <section id="sobre"><h2>Sobre</h2><p>Secció d’exemple.</p></section>
-  <section id="galeria"><h2>Galeria</h2></section>
-  <section id="testimonis"><h2>Testimonis</h2></section>
-  <section id="contacte"><h2>Contacte</h2></section>
-</main>
-<script src="scripts/app.js"></script></body></html>`;
-}
-
-// ------------------------------ OpenAI --------------------------------------
-// Try to call OpenAI's chat completions (or assistant) to edit/create files.
-// Accepts explicit API key, model and assistant so that callers can override
-// environment variables (useful for local development via headers). If no
-// apiKey is provided we fall back to environment variables. The assistant
-// parameter is currently unused but included for future extensibility.
-async function tryOpenAIEdit({ mode, prompt, name, files, apiKey, model, assistant }) {
-  const API = apiKey || process.env.OPENAI_API_KEY;
-  const modelName = model || process.env.OPENAI_MODEL || 'gpt-4o-mini';
-
-  // Missatges i format estrictes
-  const system = [
-    'You are a meticulous web code editor.',
-    'Return ONLY a JSON object exactly like {"files":{"index.html":"...","styles/style.css":"...","scripts/app.js":"..."}}.',
-    'No markdown, no explanations, no extra keys. Keep structure and accessibility.'
-  ].join(' ');
-
-  const user = {
-    mode, name, prompt,
-    files: {
-      'index.html': files['index.html'],
-      'styles/style.css': files['styles/style.css'],
-      'scripts/app.js': files['scripts/app.js']
-    }
-  };
-
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort('timeout'), OPENAI_TIMEOUT_MS);
-
-  // Chat Completions amb response_format JSON
-  const res = await fetch('https://api.openai.com/v1/chat/completions', {
-    method: 'POST',
-    signal: ctrl.signal,
-    headers: {
-      'Authorization': `Bearer ${API}`,
-      'Content-Type': 'application/json'
-    },
-    body: JSON.stringify({
-      model: modelName,
-      response_format: { type: 'json_object' },
-      temperature: 0.2,
-      messages: [
-        { role: 'system', content: system },
-        { role: 'user', content: JSON.stringify(user) }
-      ]
-    })
-  }).finally(() => clearTimeout(t));
-
-  const text = await res.text();
-  // Si la passarel·la d’OpenAI falla o torna buit → que salti al fallback
-  if (!text) throw new Error('empty_ai_response');
-
-  let data; try { data = JSON.parse(text); } catch { throw new Error('ai_not_json'); }
-
-  const msg = data?.choices?.[0]?.message?.content;
-  if (!msg) throw new Error('ai_no_content');
-
-  let parsed; try { parsed = JSON.parse(msg); } catch { throw new Error('ai_inner_not_json'); }
-  const out = parsed?.files;
-  if (!isFiles(out)) throw new Error('ai_files_invalid');
-
+function sanitizeFiles(files){
+  const out = {};
+  for (const [k,v] of Object.entries(files)){
+    let s = String(v||'');
+    // sin scripts o CSS remotos
+    s = s.replace(/<script[^>]*\s+src=["'][^"']+["'][^>]*>\s*<\/script>/gi,'');
+    s = s.replace(/<link[^>]+rel=["']stylesheet["'][^>]+href=["']http[^"']+["'][^>]*>/gi,'');
+    out[k] = s;
+  }
   return out;
 }
+function defaultIndex(){
+  return `<!doctype html><html lang="es"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Proyecto</title></head><body><main id="app"></main></body></html>`;
+}
 
-// -------------------------- Fallback intel·ligent ----------------------------
-function applyLocalEditFallback(files, promptRaw) {
-  const filesOut = { ...files };
-  const html = filesOut['index.html'] || defaultIndex();
-  const css  = filesOut['styles/style.css'] || '';
-  const js   = filesOut['scripts/app.js'] || '';
+/* ---------------- Fallback local (no IA) ----------------
+   *Mantengo tu lógica base: añadir/editar secciones simples en HTML.*
+*/
+function applyLocalEditFallback(files, promptRaw){
+  const prompt = String(promptRaw||'');
+  let html = files['index.html'];
+  let css  = files['styles/style.css'] || '/* css */';
 
-  const prompt = normalize(promptRaw);
-
-  let nextHTML = html;
-
-  // Intents bàsics: add/remove/replace + seccions conegudes
-  const isAdd      = /(^|\s)(afegeix|añad(e|ir)|agrega|add)\b/.test(prompt);
-  const isRemove   = /(^|\s)(elimina|borra|suprimeix|remove)\b/.test(prompt);
-  const isReplace  = /(^|\s)(reemplaza|substitueix|sustituye|replace)\b/.test(prompt);
-
-  const targetTestimonials = /(testimonis|testimonios|testimonials)\b/.test(prompt);
-  const targetContact      = /(contacte|contacto)\b/.test(prompt);
-
-  if (targetTestimonials) {
-    if (isRemove) {
-      nextHTML = removeLastTestimonial(nextHTML);
-    } else if (isReplace) {
-      nextHTML = replaceLastTestimonial(nextHTML, sampleTestimonial());
-    } else {
-      nextHTML = addTestimonial(nextHTML, sampleTestimonial());
-    }
-  } else if (targetContact && (isAdd || isReplace)) {
-    nextHTML = addContactNote(nextHTML);
+  // ejemplo mínimo — extender según tus bloques
+  if (/testimon/i.test(prompt) && /(remove|elimina|borra|quita)/i.test(prompt)) {
+    html = html.replace(/<section[^>]*id=["']?testimon[^>]*>[\s\S]*?<\/section>/i,'');
+  } else if (/oscuro|dark/i.test(prompt)) {
+    html = html.replace('<head>', '<head><style>body{background:#0b0f1c;color:#f2f4ff}</style>');
   } else {
-    // Si no entenem la intenció, fem una anotació discreta sense eco del prompt
-    nextHTML = ensureAINote(nextHTML, 'S’ha aplicat un canvi simple (fallback). Revisa-ho i concreta més el prompt si cal.');
+    html = html.replace('</body>', `<section style="padding:24px;border-top:1px solid #ddd"><h3>Cambio aplicado</h3><p>${escape(prompt)}</p></section></body>`);
   }
 
-  filesOut['index.html'] = nextHTML;
-  filesOut['styles/style.css'] = ensureAINoteCSS(css);
-  filesOut['scripts/app.js'] = js;
-  return filesOut;
+  return { 'index.html': html, 'styles/style.css': css, 'scripts/app.js': files['scripts/app.js'] || '// js' };
 }
-
-// Utils fallback ---------------------------------------------------------------
-function normalize(s) {
-  return String(s||'')
-    .toLowerCase()
-    .normalize('NFD').replace(/[\u0300-\u036f]/g, '') // treu accents
-    .replace(/\s+/g,' ').trim();
-}
-function ensureAINoteCSS(css) {
-  if (/\.ai-note\b/.test(css)) return css;
-  return css + `
-.ai-note{background:#fff8c5;border-left:4px solid #e6b800;padding:8px 10px;margin:10px 0;border-radius:6px;font-size:.95rem}
-.ai-note small{opacity:.8}
-`;
-}
-function getSection(html, idRe) {
-  const re = new RegExp(`<section[^>]*id=["']${idRe}["'][\\s\\S]*?<\\/section>`, 'i');
-  const m = html.match(re);
-  return m ? { match: m[0], re } : null;
-}
-function addTestimonial(html, { quote, author, stars }) {
-  const sec = getSection(html, '(testimonis|testimonios)');
-  const block = `
-<figure class="testimonial">
-  <div aria-label="${stars} estrelles" title="${stars}★">${'★'.repeat(stars)}</div>
-  <blockquote>“${quote.replace(/"/g,'&quot;')}”</blockquote>
-  <figcaption>— ${author}</figcaption>
-</figure>`;
-  if (sec) return html.replace(sec.re, s => s.replace('</section>', block + '\n</section>'));
-  return html.replace('</main>', `<section id="testimonis"><h2>Testimonis</h2>${block}</section></main>`);
-}
-function removeLastTestimonial(html) {
-  const sec = getSection(html, '(testimonis|testimonios)');
-  if (!sec) return html;
-  const newSec = sec.match.replace(/<figure class="testimonial">[\s\S]*?<\/figure>(?![\s\S]*<figure class="testimonial">)/i, '');
-  return html.replace(sec.re, newSec);
-}
-function replaceLastTestimonial(html, t) {
-  const sec = getSection(html, '(testimonis|testimonios)');
-  if (!sec) return addTestimonial(html, t);
-  const block = `
-<figure class="testimonial">
-  <div aria-label="${t.stars} estrelles" title="${t.stars}★">${'★'.repeat(t.stars)}</div>
-  <blockquote>“${t.quote.replace(/"/g,'&quot;')}”</blockquote>
-  <figcaption>— ${t.author}</figcaption>
-</figure>`;
-  const newSec = sec.match.replace(/<figure class="testimonial">[\s\S]*?<\/figure>(?![\s\S]*<figure class="testimonial">)/i, block);
-  return html.replace(sec.re, newSec);
-}
-function addContactNote(html) {
-  const sec = getSection(html, '(contacte|contacto)');
-  const note = `<p class="ai-note"><strong>Info:</strong> Per a més informació escriu-nos a <a href="mailto:info@example.com">info@example.com</a>.</p>`;
-  if (sec) return html.replace(sec.re, s => s.replace('</section>', note + '\n</section>'));
-  return html.replace('</main>', `<section id="contacte"><h2>Contacte</h2>${note}</section></main>`);
-}
-function ensureAINote(html, text) {
-  const p = `<p class="ai-note"><small>${text}</small></p>`;
-  const sec = getSection(html, '(sobre|hero|galeria|testimonis|contacte|inicio|inici)');
-  if (sec) return html.replace(sec.re, s => s.replace('</section>', p + '\n</section>'));
-  return html.replace('</main>', `${p}</main>`);
-}
-function sampleTestimonial() {
-  const samples = [
-    { quote: 'Una experiència immersiva genial. Els nostres clients han notat el canvi.', author: 'Carla S., Responsable de fitness', stars: 5 },
-    { quote: 'Instal·lació ràpida i impacte immediat a la comunitat esportiva.', author: 'Joan M., Gestor de centre', stars: 5 },
-    { quote: 'Disseny i tecnologies en harmonia; la gent repeteix.', author: 'Laura P., Entrenadora', stars: 5 }
-  ];
-  return samples[Math.floor(Math.random()*samples.length)];
-}
+function escape(s=''){ return s.replace(/[&<>"']/g,m=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[m])); }
