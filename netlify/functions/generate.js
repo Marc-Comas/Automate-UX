@@ -24,7 +24,7 @@ export const handler = async (event) => {
     const apiKey = headers['x-openai-key'] || headers['X-OpenAI-Key'] || process.env.OPENAI_API_KEY || '';
     const openaiOrg = process.env.OPENAI_ORG_ID || '';
     const openaiProject = process.env.OPENAI_PROJECT || '';
-    const model = process.env.OPENAI_MODEL || 'gpt-4o-mini';
+    const model = process.env.OPENAI_MODEL || 'gpt-4o';
 
     // Asegura estructura mínima
     const current = normalizeFiles(files);
@@ -37,6 +37,9 @@ export const handler = async (event) => {
 
     if (apiKey) {
       try {
+        // IMPORTANT: JSON Schema estricto y válido para response_format
+        // - strict:true => el validador exige "required" que contenga TODAS las keys de "properties" en cada objeto que tenga "properties".
+        // - Para el objeto "files", enumeramos propiedades explícitas y ponemos additionalProperties:false.
         const schema = {
           name: 'files_payload',
           strict: true,
@@ -46,9 +49,14 @@ export const handler = async (event) => {
             properties: {
               files: {
                 type: 'object',
-                description: 'Map of file paths to text content',
-                additionalProperties: { type: 'string' },
-                required: ['index.html']
+                additionalProperties: false,
+                properties: {
+                  "index.html": { type: "string" },
+                  "styles/style.css": { type: "string" },
+                  "scripts/app.js": { type: "string" }
+                },
+                // Solo exigimos index.html; los demás pueden omitirse
+                required: ["index.html"]
               }
             },
             required: ['files']
@@ -164,8 +172,8 @@ function sanitizeFiles(files){
   for (const [k,v] of Object.entries(files)){
     let s = String(v||'');
     // sin scripts o CSS remotos
-    s = s.replace(/<script[^>]*\s+src=["'][^"']+["'][^>]*>\s*<\/script>/gi,'');
-    s = s.replace(/<link[^>]+rel=["']stylesheet["'][^>]+href=["']http[^"']+["'][^>]*>/gi,'');
+    s = s.replace(/<script[^>]*\s+src=["'][^"']+["'][^>]*>\s*<\/script>/gi,');
+    s = s.replace(/<link[^>]+rel=["']stylesheet["'][^>]+href=["']http[^"']+["'][^>]*>/gi,');
     out[k] = s;
   }
   return out;
@@ -186,7 +194,7 @@ function applyLocalEditFallback(files, promptRaw){
 
   // ejemplo mínimo — extender según tus bloques
   if (/testimon/i.test(prompt) && /(remove|elimina|borra|quita)/i.test(prompt)) {
-    html = html.replace(/<section[^>]*id=["']?testimon[^>]*>[\s\S]*?<\/section>/i,'');
+    html = html.replace(/<section[^>]*id=["']?testimon[^>]*>[\\s\\S]*?<\\/section>/i,'');
   } else if (/oscuro|dark/i.test(prompt)) {
     html = html.replace('<head>', '<head><style>body{background:#0b0f1c;color:#f2f4ff}</style>');
   } else {
@@ -195,4 +203,4 @@ function applyLocalEditFallback(files, promptRaw){
 
   return { 'index.html': html, 'styles/style.css': css, 'scripts/app.js': files['scripts/app.js'] || '// js' };
 }
-function escape(s=''){ return s.replace(/[&<>"']/g,m=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[m])); }
+function escape(s=''){ return s.replace(/[&<>"']/g,m=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;' }[m])); }
