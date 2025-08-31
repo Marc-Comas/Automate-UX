@@ -35,7 +35,9 @@ module.exports.handler = async (event) => {
 
     if (apiKey) {
       try {
-        // JSON Schema estricto y válido
+        // JSON Schema estricto y válido según la validación de OpenAI:
+        // - strict:true exige que 'required' incluya TODAS las keys de 'properties' en cada objeto.
+        // - Por tanto, en 'files' exigimos las 3 claves.
         const schema = {
           name: 'files_payload',
           strict: true,
@@ -51,7 +53,7 @@ module.exports.handler = async (event) => {
                   "styles/style.css": { type: "string" },
                   "scripts/app.js": { type: "string" }
                 },
-                required: ["index.html"]
+                required: ["index.html","styles/style.css","scripts/app.js"]
               }
             },
             required: ['files']
