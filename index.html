@@ -521,26 +521,31 @@ async function renderPreview(params){
 
   $('#pv-download').onclick=()=>{ const blob=makeZip(proj.files||{}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`${(proj.name||proj.slug||'site')}.zip`; a.click(); URL.revokeObjectURL(a.href); };
 
-  $('#pv-apply-ai').onclick = async ()=>{
-    pvInfo.hidden=false; pvInfo.textContent='Aplicando cambios con IA...'; pvErr.hidden=true;
-    try{
-      const prompt = ($('#pv-prompt').value||'').trim(); if(!prompt) throw new Error('Escribe un prompt');
-      const r = await fetch('/.netlify/functions/generate', { method:'POST', headers: buildOpenAIHeaders(), body: JSON.stringify({ mode:'edit', prompt, name: proj.name, files: proj.files }) });
-      const data = await r.json();
-      // Si la IA retorna nota de fallback o no genera arxius vàlids, considerem-ho error
-      if(!r.ok || !data.files || data.note){ throw new Error(data.error || data.note || 'La función no devolvió archivos'); }
-      const updated = {...proj, files: data.files, status:'edited', updatedAt: Date.now()};
-      await upsertProject(updated);
-      renderPreview(new URLSearchParams(`id=${encodeURIComponent(getProjectKey(proj))}`)); pvInfo.textContent='Cambios aplicados (IA).';
-    }catch(err){
-      pvInfo.hidden=true; pvErr.hidden=false;
-      // Si se detecta un fallback, informa claramente al usuario
-      const msg = (err.message && /openai_error_fallback/.test(err.message))
-        ? 'La IA falló y se activó el fallback. Ajusta tu prompt o revisa tu API key.'
-        : ('Error: '+(err.message||''));
-      pvErr.textContent=msg;
+ $('#pv-apply-ai').onclick = async ()=>{
+  pvInfo.hidden=false; pvInfo.textContent='Aplicando cambios con IA.'; pvErr.hidden=true;
+  try{
+    const prompt = ($('#pv-prompt').value||'').trim(); if(!prompt) throw new Error('Escribe un prompt');
+    const r = await fetch('/.netlify/functions/generate', {
+      method:'POST',
+      headers: buildOpenAIHeaders(),
+      body: JSON.stringify({ mode:'edit', allowFallback:false, prompt, name: proj.name, files: proj.files })
+    });
+    const data = await r.json().catch(()=>({}));
+    if(!r.ok) {
+      const msg = (data && (data.error || data.note)) ? `${data.error||data.note}${data.upstream_status?` (upstream ${data.upstream_status})`:''}` : `HTTP ${r.status}`;
+      throw new Error(msg);
     }
-  };
+    if(!data.files || data.note) throw new Error(data.note || 'La función no devolvió archivos');
+
+    const updated = { ...proj, files: data.files, status:'edited', updatedAt: Date.now() };
+    await upsertProject(updated);
+    renderPreview(new URLSearchParams(`id=${encodeURIComponent(getProjectKey(proj))}`));
+    pvInfo.textContent='Cambios aplicados (IA).';
+  }catch(err){
+    pvInfo.hidden=true; pvErr.hidden=false; pvErr.textContent='Error: '+(err.message||'');
+  }
+};
+
   $('#pv-apply-local').onclick = ()=>{
     const txt = ($('#pv-prompt').value||'').trim();
     const updatedFiles = localEdit(proj.files||{}, txt);
