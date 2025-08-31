@@ -1,12 +1,11 @@
 // netlify/functions/generate.js
-// ÚNICA implementación. Formato Netlify Functions (ESM) con "type":"module".
-// Política: NUNCA hacer cambios silenciosos si la IA falla. Si falla => 502.
-// Para “crear” puedes permitir fallback enviando allowFallback:true.
+// CommonJS Netlify Function (module.exports.handler).
+// Política: nunca afirmar éxito si la IA falla; en 'edit' se devuelve 502.
+// Para 'create' puedes permitir fallback enviando allowFallback:true en el body.
 
-const TIMEOUT_MS = 22000;
+const TIMEOUT_MS = Number(process.env.GEN_AI_TIMEOUT_MS || 22000);
 
-export const handler = async (event) => {
-  // CORS
+module.exports.handler = async (event) => {
   if (event.httpMethod === 'OPTIONS') return j(204, {});
   if (event.httpMethod !== 'POST') return j(405, { ok: false, error: 'Method not allowed' });
 
@@ -21,15 +20,14 @@ export const handler = async (event) => {
     } = body;
 
     const headers = event.headers || {};
+    // Netlify normaliza a minúsculas
     const apiKey = headers['x-openai-key'] || headers['X-OpenAI-Key'] || process.env.OPENAI_API_KEY || '';
     const openaiOrg = process.env.OPENAI_ORG_ID || '';
     const openaiProject = process.env.OPENAI_PROJECT || '';
     const model = process.env.OPENAI_MODEL || 'gpt-4o';
 
-    // Asegura estructura mínima
     const current = normalizeFiles(files);
 
-    // Timeout duro (Netlify corta ~26s)
     const ctrl = new AbortController();
     const to = setTimeout(() => ctrl.abort('timeout'), TIMEOUT_MS);
 
@@ -37,9 +35,7 @@ export const handler = async (event) => {
 
     if (apiKey) {
       try {
-        // IMPORTANT: JSON Schema estricto y válido para response_format
-        // - strict:true => el validador exige "required" que contenga TODAS las keys de "properties" en cada objeto que tenga "properties".
-        // - Para el objeto "files", enumeramos propiedades explícitas y ponemos additionalProperties:false.
+        // JSON Schema estricto y válido
         const schema = {
           name: 'files_payload',
           strict: true,
@@ -55,7 +51,6 @@ export const handler = async (event) => {
                   "styles/style.css": { type: "string" },
                   "scripts/app.js": { type: "string" }
                 },
-                // Solo exigimos index.html; los demás pueden omitirse
                 required: ["index.html"]
               }
             },
@@ -109,17 +104,17 @@ export const handler = async (event) => {
         const msg = data?.choices?.[0]?.message?.content;
 
         if (!resp.ok) {
-          aiError = data?.error?.message || `openai_${resp.status}`;
+          aiError = (data && data.error && data.error.message) ? data.error.message : `openai_${resp.status}`;
         } else if (!msg) {
           aiError = 'ai_no_message';
         } else {
           let parsed = null; try { parsed = JSON.parse(msg); } catch { aiError = 'ai_inner_not_json'; }
-          const out = parsed?.files;
+          const out = parsed && parsed.files;
           if (isFiles(out)) aiFiles = sanitizeFiles(out);
           else aiError = 'ai_files_invalid';
         }
       } catch (e) {
-        aiError = String(e?.message || e);
+        aiError = String(e && e.message || e);
       } finally {
         clearTimeout(to);
       }
@@ -128,24 +123,21 @@ export const handler = async (event) => {
       aiError = 'missing_api_key';
     }
 
-    // Éxito IA
     if (isFiles(aiFiles)) return j(200, { ok: true, files: aiFiles });
 
-    // Sin IA válida → o devolvemos error (edit) o fallback (create si allowFallback)
     if (!allowFallback || mode === 'edit') {
       return j(502, { ok: false, error: 'ai_failed', details: aiError, upstream_status: upstream });
     }
 
-    // Fallback sólo si está permitido
     const fb = applyLocalEditFallback(current, prompt);
     return j(200, { ok: true, files: fb, note: 'openai_error_fallback', upstream_status: upstream });
 
   } catch (err) {
-    return j(500, { ok: false, error: err?.message || String(err) });
+    return j(500, { ok: false, error: err && err.message || String(err) });
   }
 };
 
-/* ---------------- Helpers básicos ---------------- */
+/* ---------------- Helpers ---------------- */
 function j(status, payload) {
   return {
     statusCode: status,
@@ -159,7 +151,11 @@ function j(status, payload) {
   };
 }
 function safeJson(x){ try{ return JSON.parse(x || '{}'); }catch{ return {}; } }
-function isFiles(obj){ return !!obj && typeof obj==='object' && 'index.html' in obj && Object.values(obj).every(v=>typeof v==='string'); }
+function isFiles(obj){
+  if (!obj || typeof obj !== 'object') return false;
+  if (!('index.html' in obj)) return false;
+  return Object.keys(obj).every(k => typeof obj[k] === 'string');
+}
 function normalizeFiles(input){
   const out = { ...(input||{}) };
   if (typeof out['index.html'] !== 'string') out['index.html'] = defaultIndex();
@@ -171,9 +167,9 @@ function sanitizeFiles(files){
   const out = {};
   for (const [k,v] of Object.entries(files)){
     let s = String(v||'');
-    // sin scripts o CSS remotos
-    s = s.replace(/<script[^>]*\s+src=["'][^"']+["'][^>]*>\s*<\/script>/gi,');
-    s = s.replace(/<link[^>]+rel=["']stylesheet["'][^>]+href=["']http[^"']+["'][^>]*>/gi,');
+    // elimina scripts externos y CSS remotos
+    s = s.replace(/<script[^>]*\ssrc=["'][^"']+["'][^>]*>\s*<\/script>/gi, '');
+    s = s.replace(/<link[^>]+rel=["']stylesheet["'][^>]+href=["']https?:\/\/[^"']+["'][^>]*>/gi, '');
     out[k] = s;
   }
   return out;
@@ -183,18 +179,13 @@ function defaultIndex(){
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Proyecto</title></head><body><main id="app"></main></body></html>`;
 }
-
-/* ---------------- Fallback local (no IA) ----------------
-   *Mantengo tu lógica base: añadir/editar secciones simples en HTML.*
-*/
 function applyLocalEditFallback(files, promptRaw){
   const prompt = String(promptRaw||'');
   let html = files['index.html'];
   let css  = files['styles/style.css'] || '/* css */';
 
-  // ejemplo mínimo — extender según tus bloques
   if (/testimon/i.test(prompt) && /(remove|elimina|borra|quita)/i.test(prompt)) {
-    html = html.replace(/<section[^>]*id=["']?testimon[^>]*>[\\s\\S]*?<\\/section>/i,'');
+    html = html.replace(/<section[^>]*id=["']?testimon[^>]*>[\s\S]*?<\/section>/i,'');
   } else if (/oscuro|dark/i.test(prompt)) {
     html = html.replace('<head>', '<head><style>body{background:#0b0f1c;color:#f2f4ff}</style>');
   } else {
@@ -203,4 +194,4 @@ function applyLocalEditFallback(files, promptRaw){
 
   return { 'index.html': html, 'styles/style.css': css, 'scripts/app.js': files['scripts/app.js'] || '// js' };
 }
-function escape(s=''){ return s.replace(/[&<>"']/g,m=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;','\'':'&#39;' }[m])); }
+function escape(s=''){ return s.replace(/[&<>"']/g,m=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[m])); }
