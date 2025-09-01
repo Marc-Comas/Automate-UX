@@ -1,9 +1,0 @@
-{
-  "rules": {
-    "navigationPosition": "top",
-    "order": ["hero", "about", "features", "gallery", "testimonials", "pricing", "faq", "contact"],
-    "ctaPlacement": "hero",
-    "sectionSpacing": "64px",
-    "maxTestimonials": 3
-  }
-}
