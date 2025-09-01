@@ -1,7 +1,7 @@
 {
   "name": "ai-runner",
   "version": "1.0.0",
-  "description": "Asynchronous job runner for AI‑driven web edits",
+  "description": "Asynchronous job runner for AI-driven web edits",
   "main": "index.js",
   "type": "commonjs",
   "scripts": {
@@ -9,7 +9,7 @@
   },
   "dependencies": {
     "express": "^4.18.2",
-    "ioredis": "^5.3.2",
-    "node-fetch": "^3.3.2"
-  }
+    "ioredis": "^5.3.2"
+  },
+  "engines": { "node": ">=18" }
 }
