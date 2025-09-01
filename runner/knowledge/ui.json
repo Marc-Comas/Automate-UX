@@ -1,0 +1,19 @@
+{
+  "components": {
+    "button": {
+      "borderRadius": "12px",
+      "padding": "12px 24px",
+      "fontWeight": "600"
+    },
+    "section": {
+      "margin": "24px 0"
+    },
+    "font": "Inter, Arial, sans-serif",
+    "cta": {
+      "background": "accent",
+      "color": "background",
+      "padding": "14px 28px",
+      "borderRadius": "8px"
+    }
+  }
+}
