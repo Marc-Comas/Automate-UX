@@ -4,15 +4,68 @@
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Project Central — Cloud Mode (GitHub Data)</title>
 <style>
-:root{--bg:#0b0f1c;--panel:#ffffff10;--ink:#eef1ff;--pri:#7aa2ff;--danger:#ff6d8c}
-*{box-sizing:border-box}body{margin:0;background:linear-gradient(180deg,#0b0f1c,#0d142c);color:var(--ink);font:15px/1.6 system-ui}
+:root{
+  /* Paleta moderna i fosca amb accents vius per a CTAs */
+  --bg:#050a1a;
+  --bg-2:#0d1740;
+  --panel:#ffffff14;
+  --ink:#f1f5ff;
+  --pri:#7aa2ff;
+  --pri-2:#52d6ca;
+  --danger:#ff6d8c;
+}
+*{box-sizing:border-box}
+body{
+  margin:0;
+  background:linear-gradient(180deg,var(--bg),var(--bg-2));
+  color:var(--ink);
+  font:15px/1.6 "Inter",system-ui,sans-serif;
+}
 .layout{display:grid;grid-template-columns:280px 1fr;min-height:100vh}
 aside{padding:18px;background:var(--panel);backdrop-filter: blur(10px);border-right:1px solid #ffffff22}
 main{padding:26px}
-.nav a{display:block;padding:10px 12px;margin:6px 0;border-radius:10px;color:inherit;text-decoration:none}
-.nav a[aria-current="page"]{background:#ffffff18;border:1px solid #ffffff33}
-.btn{display:inline-flex;gap:8px;align-items:center;padding:9px 12px;border-radius:10px;background:#101632;border:1px solid #ffffff22;color:var(--ink);cursor:pointer}
-.btn.primary{background:linear-gradient(135deg,#7aa2ff,#52d6ca);color:#081022;border:none}
+.nav a{
+  display:block;
+  padding:10px 12px;
+  margin:6px 0;
+  border-radius:10px;
+  color:inherit;
+  text-decoration:none;
+  transition:background .2s,color .2s;
+}
+.nav a:hover{
+  background:#ffffff12;
+  color:#ffffff;
+}
+.nav a[aria-current="page"]{
+  background:#ffffff18;
+  border:1px solid #ffffff33;
+}
+.btn{
+  display:inline-flex;
+  gap:8px;
+  align-items:center;
+  padding:9px 12px;
+  border-radius:10px;
+  background:#101632;
+  border:1px solid #ffffff22;
+  color:var(--ink);
+  cursor:pointer;
+  transition:background .2s,transform .1s,filter .2s;
+}
+.btn.primary{
+  background:linear-gradient(135deg,var(--pri),var(--pri-2));
+  color:#081022;
+  border:none;
+}
+.btn:hover{
+  background:#16204d;
+  transform:translateY(-2px);
+}
+.btn.primary:hover{
+  filter:brightness(1.15);
+  transform:translateY(-2px);
+}
 .cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:14px;margin-top:12px}
 .card{position:relative;background:var(--panel);border:1px solid #ffffff22;border-radius:14px;padding:14px}
 label{display:block;margin:10px 0 6px}
@@ -446,17 +499,11 @@ function wireNewForm(){
     const slug=slugify(name); const id=uuid();
     let files;
     try{
-      // Primer generador: mode "create" per indicar a la IA que cree un sitio complet.
+      // Primer generador: mode "create" per indicar a la IA que cree un sitio completo. Al faltar files, se enviará {}.
       const r=await fetch('/.netlify/functions/generate',{method:'POST',headers:buildOpenAIHeaders(),body:JSON.stringify({ mode:'create', prompt, name, files:{} })});
-      const data=await r.json();
-      // Si la funció IA falla (HTTP no OK) o retorna una nota de fallback → llença per caure al local
-      if(!r.ok || !data.files || data.note){ throw new Error(data.error||data.note||'Error de generación'); }
-      files = data.files;
+      const data=await r.json(); if(!r.ok) throw new Error(data.error||'Error de generación'); files = data.files;
     }catch(err){
       files = generateSite({name,prompt}).files;
-      // Mostra una notificació bàsica informant que s'ha utilitzat el fallback local
-      info.hidden=false;
-      info.textContent='Generado con fallback local debido a un problema con la IA.';
     }
     const proj={id,name,slug,desc,status:'generated',files,createdAt:Date.now(),updatedAt:Date.now()};
     await upsertProject(proj);
@@ -521,31 +568,68 @@ async function renderPreview(params){
 
   $('#pv-download').onclick=()=>{ const blob=makeZip(proj.files||{}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`${(proj.name||proj.slug||'site')}.zip`; a.click(); URL.revokeObjectURL(a.href); };
 
- $('#pv-apply-ai').onclick = async ()=>{
-  pvInfo.hidden=false; pvInfo.textContent='Aplicando cambios con IA.'; pvErr.hidden=true;
-  try{
-    const prompt = ($('#pv-prompt').value||'').trim(); if(!prompt) throw new Error('Escribe un prompt');
-    const r = await fetch('/.netlify/functions/generate', {
-      method:'POST',
-      headers: buildOpenAIHeaders(),
-      body: JSON.stringify({ mode:'edit', allowFallback:false, prompt, name: proj.name, files: proj.files })
-    });
-    const data = await r.json().catch(()=>({}));
-    if(!r.ok) {
-      const msg = (data && (data.error || data.note)) ? `${data.error||data.note}${data.upstream_status?` (upstream ${data.upstream_status})`:''}` : `HTTP ${r.status}`;
-      throw new Error(msg);
-    }
-    if(!data.files || data.note) throw new Error(data.note || 'La función no devolvió archivos');
-
-    const updated = { ...proj, files: data.files, status:'edited', updatedAt: Date.now() };
-    await upsertProject(updated);
-    renderPreview(new URLSearchParams(`id=${encodeURIComponent(getProjectKey(proj))}`));
-    pvInfo.textContent='Cambios aplicados (IA).';
-  }catch(err){
-    pvInfo.hidden=true; pvErr.hidden=false; pvErr.textContent='Error: '+(err.message||'');
-  }
-};
-
+          // Cambia el flujo de IA para utilizar el sistema de trabajos asíncronos. Al hacer clic,
+          // se crea un job en el backend, se obtiene un jobId y se realiza polling hasta que
+          // la IA termine. Si hay algún error, se muestra en pantalla y no se aplica ningún cambio.
+          $('#pv-apply-ai').onclick = async () => {
+            pvInfo.hidden = false;
+            pvInfo.textContent = 'Creando trabajo...';
+            pvErr.hidden = true;
+            try {
+              const prompt = ($('#pv-prompt').value || '').trim();
+              if (!prompt) throw new Error('Escribe un prompt');
+              // Construye el payload con el preset por defecto. Puedes cambiar 'code' por
+              // 'ui', 'ux' o 'copy' para especializar la tarea. También se incluye el snapshot
+              // actual de los archivos del proyecto y su nombre.
+              const payload = {
+                preset: 'code',
+                prompt,
+                name: proj.name,
+                files: proj.files,
+                brand: getSettings().brand || null
+              };
+              const res = await fetch('/.netlify/functions/jobs-create', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+              });
+              const data = await res.json().catch(() => ({}));
+              if (res.status !== 202 || !data.jobId) {
+                throw new Error(data.error || 'No se pudo crear el trabajo');
+              }
+              const jobId = data.jobId;
+              pvInfo.textContent = 'IA trabajando...';
+              // Función recursiva de polling. Consulta periódicamente el estado del job.
+              const poll = async () => {
+                const statusRes = await fetch('/.netlify/functions/jobs-status?id=' + encodeURIComponent(jobId), {
+                  method: 'GET'
+                });
+                const statusData = await statusRes.json().catch(() => ({}));
+                if (statusRes.status === 200) {
+                  if (statusData.status === 'done') {
+                    const files = statusData.result && statusData.result.files;
+                    if (!files) throw new Error('El trabajo se completó sin archivos');
+                    const updated = { ...proj, files, status: 'edited', updatedAt: Date.now() };
+                    await upsertProject(updated);
+                    renderPreview(new URLSearchParams(`id=${encodeURIComponent(getProjectKey(proj))}`));
+                    pvInfo.textContent = 'Cambios aplicados (IA).';
+                  } else if (statusData.status === 'error') {
+                    throw new Error(statusData.error || 'Error en el trabajo IA');
+                  } else {
+                    // Aún en progreso, repetimos después de un breve retraso
+                    setTimeout(poll, 2000);
+                  }
+                } else {
+                  throw new Error(statusData.error || 'No se pudo consultar el estado del trabajo');
+                }
+              };
+              poll();
+            } catch (err) {
+              pvInfo.hidden = true;
+              pvErr.hidden = false;
+              pvErr.textContent = 'Error: ' + (err.message || '');
+            }
+          };
   $('#pv-apply-local').onclick = ()=>{
     const txt = ($('#pv-prompt').value||'').trim();
     const updatedFiles = localEdit(proj.files||{}, txt);
