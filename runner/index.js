@@ -14,12 +14,33 @@
  */
 
 const express = require('express');
+const { customAlphabet } = require('nanoid');
 const Redis = require('ioredis');
-const fs = require('fs');
-const path = require('path');
+
+const PORT = Number(process.env.PORT || 8080);
+const REDIS_URL = process.env.REDIS_URL || ""; // vacío = intentará 127.0.0.1
+
+// Instancia Redis y maneja errores para que NO tumbe el proceso
+const redis = new Redis(REDIS_URL, {
+  lazyConnect: false,
+  maxRetriesPerRequest: null
+});
+redis.on('error', (err) => console.error('[redis] error:', err && err.message));
+redis.on('connect', () => console.log('[redis] connected'));
+redis.on('reconnecting', () => console.log('[redis] reconnecting...'));
 
 const app = express();
-app.use(express.json({ limit: '1mb' }));
+app.use(express.json({ limit: '2mb' }));
+
+app.get('/health', (req, res) => {
+  res.set('Access-Control-Allow-Origin', '*');
+  return res.json({ ok: true, uptime: process.uptime(), port: PORT });
+});
+
+app.listen(PORT, () => {
+  console.log(`[runner] listening on ${PORT}`);
+});
+
 
 // Configuration from environment
 const {
