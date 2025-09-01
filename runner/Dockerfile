@@ -1,19 +1,16 @@
-# Use an official Node runtime as the base image
-FROM node:18-alpine
+# runner/Dockerfile
+FROM node:20-alpine
 
-# Set working directory
 WORKDIR /app
 
-# Copy package files first and install dependencies
-COPY package.json ./
-RUN npm install --production
+# 1) Instalar deps con cache correcto
+COPY package.json package-lock.json* ./
+RUN npm ci --omit=dev
 
-# Copy the rest of the application
-COPY index.js ./
-COPY knowledge ./knowledge
+# 2) Copiar el código
+COPY . .
 
-# Expose the default port
-EXPOSE 3000
+# 3) Railway inyecta PORT; Express debe escuchar process.env.PORT
+EXPOSE 8080
 
-# Command to run the app
-CMD ["node", "index.js"]
+CMD ["npm","start"]
