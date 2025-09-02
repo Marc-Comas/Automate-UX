@@ -293,12 +293,9 @@ async function runJob(job) {
     job.logs.push(`Model ${model} failed: ${res.error}`);
     job.updatedAt = Date.now();
     await redis.set('jobs:data:' + job.id, JSON.stringify(job));
-    // If the error is a timeout, break early instead of trying fallbacks.
-    // Retrying with another model is unlikely to help in the same call
-    // if the prompt itself requires more time than allotted.
-    if (res.error === 'timeout') {
-      break;
-    }
+    // Continue to next model even if this one times out. Another model
+    // might succeed (e.g. gpt‑4o or gpt‑4o‑mini) when gpt‑5 fails. We
+    // intentionally do not break here to allow fallbacks.
   }
   // If we reach here, all models failed
   job.status = 'error';
