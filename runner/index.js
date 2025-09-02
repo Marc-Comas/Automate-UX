@@ -195,31 +195,23 @@ function validateAiOutput(obj) {
   return files;
 }
 
-// Call OpenAI Responses API with a given model. Returns { ok, files? , error? }.
+// Call OpenAI via the Chat Completions API with a given model.
+// Returns { ok, files?, error? }.
 async function callOpenAI(model, systemPrompt, userContent) {
-  const url = 'https://api.openai.com/v1/responses';
+  // Use chat completions endpoint for stability and JSON mode support.
+  const url = 'https://api.openai.com/v1/chat/completions';
   const headers = {
     'Content-Type': 'application/json',
     Authorization: `Bearer ${OPENAI_API_KEY}`,
   };
-  // NOTE: As of 2025, the Responses API no longer accepts the
-  // `response_format` parameter. Instead, use the `text.format`
-  // field under `text` to request JSON output. See:
-  // https://platform.openai.com/docs/api-reference/responses/create
-  // Build the request body using the 2025 Responses API. The API no longer
-  // accepts `messages` or `response_format`. Use `instructions` for the
-  // system prompt and `input` for the user payload. Request JSON output
-  // using the `text.format` field. See:
-  // https://platform.openai.com/docs/api-reference/responses/create
   const body = {
     model,
-    instructions: systemPrompt,
-    // Send the user payload (prompt + files + brand) as a single string in
-    // the `input` field. For more complex conversations, `input` could be an
-    // array of role/content objects, but a single string suffices for our
-    // use case.
-    input: userContent,
-    text: { format: 'json_object' },
+    temperature: 0.2,
+    response_format: { type: 'json_object' },
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: userContent },
+    ],
   };
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), Number(MODEL_TIMEOUT_MS));
@@ -236,8 +228,8 @@ async function callOpenAI(model, systemPrompt, userContent) {
       const message = data?.error?.message || `OpenAI HTTP ${resp.status}`;
       return { ok: false, error: message };
     }
-    // The Responses API returns a "response" property with role/content
-    const content = data?.response?.content || data?.response || '';
+    // Chat completions returns choices array with message content
+    const content = data?.choices?.[0]?.message?.content || '';
     let obj;
     try {
       obj = JSON.parse(content);
