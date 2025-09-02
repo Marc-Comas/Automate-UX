@@ -85,6 +85,18 @@ input,textarea,select{width:100%;padding:10px;border-radius:10px;border:1px soli
 .kbd{font: 11px/1.2 ui-monosace, SFMono-Regular, Menlo, Consolas, monospace; padding:3px 6px; border-radius:6px; background:#0008; border:1px solid #fff2}
 @media (max-width:980px){.layout{grid-template-columns:1fr}}
 </style>
+<!-- Configuración de marca por defecto. Si el proyecto no define su propia paleta,
+     estos valores se enviarán al runner para guiar la IA. -->
+<script>
+window.brandConfig = {
+  primary: '#FDB022',
+  accent: '#00D4FF',
+  bg: '#0B0F1C',
+  text: '#F3F6FF',
+  radius: 16,
+  tone: 'directo, moderno y útil'
+};
+</script>
 </head>
 <body>
 <div class="layout">
@@ -145,6 +157,14 @@ input,textarea,select{width:100%;padding:10px;border-radius:10px;border:1px soli
       <div style="margin-top:12px">
         <label for="pv-prompt">Modificar con prompt</label>
         <textarea id="pv-prompt" rows="5" placeholder="Ej.: Oscurece el tema y añade sección de precios con 3 planes"></textarea>
+        <!-- Selector de tipo de edición (sombrero) -->
+        <label class="pv-label" for="pv-preset">Tipo de cambio</label>
+        <select id="pv-preset" class="pv-input">
+          <option value="code">Código</option>
+          <option value="ui" selected>UI</option>
+          <option value="ux">UX/Estructura</option>
+          <option value="copy">Copy</option>
+        </select>
         <div class="row" style="margin-top:8px">
           <button class="btn primary" id="pv-apply-ai">Aplicar cambios (IA)</button>
           <button class="btn" id="pv-apply-local">Aplicar cambios (local)</button>
@@ -581,12 +601,19 @@ async function renderPreview(params){
               // Construye el payload con el preset por defecto. Puedes cambiar 'code' por
               // 'ui', 'ux' o 'copy' para especializar la tarea. También se incluye el snapshot
               // actual de los archivos del proyecto y su nombre.
+              // Leer el preset del selector. Si no existe, usa 'code' por defecto.
+              const presetEl = document.getElementById('pv-preset');
+              const preset = presetEl ? presetEl.value : 'code';
+              // Usar brandConfig global si está definido, o caer al brand de settings.
+              const brand = (typeof window !== 'undefined' && window.brandConfig)
+                ? window.brandConfig
+                : (getSettings().brand || null);
               const payload = {
-                preset: 'code',
+                preset,
                 prompt,
                 name: proj.name,
                 files: proj.files,
-                brand: getSettings().brand || null
+                brand
               };
               const res = await fetch('/.netlify/functions/jobs-create', {
                 method: 'POST',
