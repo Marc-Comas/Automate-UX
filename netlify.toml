@@ -1,3 +1,11 @@
 [build]
-functions = "netlify/functions"
+# The functions directory points to the serverless functions that back the AI job
+# runner. The default path ("netlify/functions") does not exist in this repo,
+# which caused Netlify to serve a default 401 error. Pointing to the actual
+# location under async‑ia‑pack ensures the `jobs-create` and `jobs-status`
+# functions are used.
+functions = "async-ia-pack/netlify/functions"
+
+# Continue publishing the static site from the repo root. The site assets
+# (index.html, styles, scripts) live at the top level, so keep publish as ".".
 publish = "."
