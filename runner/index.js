@@ -15,34 +15,20 @@
 
 const express = require('express');
 const Redis = require('ioredis');
+// Use the global `fetch` API provided by Node 18+. The previous
+// implementation used node-fetch which is ESM-only and caused ERR_REQUIRE_ESM
+// errors when required in CommonJS. Node 18 includes a native fetch
+// implementation, so we rely on that instead.
+// NOTE: Do not import or require node-fetch here.
 const fs = require('fs');
 const path = require('path');
 
-// Use the built‑in fetch available in Node >=18. This avoids issues with
-// node-fetch being ESM‑only. AbortController is also globally available.
-
-const PORT = Number(process.env.PORT || 8080);
-
 const app = express();
-app.use(express.json({ limit: '2mb' }));
+app.use(express.json({ limit: '1mb' }));
 
-// Simple CORS middleware to allow calls from Netlify functions or the UI
-app.use((req, res, next) => {
-  res.set('Access-Control-Allow-Origin', '*');
-  res.set('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
-  res.set('Access-Control-Allow-Headers', 'Content-Type,x-runner-secret');
-  if (req.method === 'OPTIONS') return res.status(204).end();
-  next();
-});
-
-// Health endpoint for readiness probes and debugging
-app.get('/health', (req, res) => {
-  return res.json({ ok: true, uptime: process.uptime(), port: PORT });
-});
-
-// Configuration from environment variables with sane defaults
+// Configuration from environment
 const {
-  REDIS_URL = '',
+  REDIS_URL,
   RUNNER_SHARED_SECRET,
   OPENAI_API_KEY,
   OPENAI_MODEL_PRIMARY,
@@ -52,65 +38,48 @@ const {
   WORKER_ENABLED = 'true',
 } = process.env;
 
-// Connect to Redis and log connection state. We avoid crashing the process
-// when Redis is temporarily unavailable by listening for errors.
+// Connect to Redis
 const redis = new Redis(REDIS_URL);
-redis.on('error', (err) => {
-  console.error('[redis] error:', err && err.message);
-});
-redis.on('connect', () => {
-  console.log('[redis] connected');
-});
-redis.on('reconnecting', () => {
-  console.log('[redis] reconnecting…');
-});
 
-// Load knowledge documents. These guide the AI on brand, UI, UX and copy.
-// We support both `knowledge` at the project root and under `async-ia-pack/knowledge`.
+// Load knowledge documents into memory once at startup
 function loadKnowledge() {
-  const candidates = [
-    path.join(__dirname, 'knowledge'),
-    path.join(__dirname, 'async-ia-pack', 'knowledge'),
-  ];
+  const dir = path.join(__dirname, '..', 'knowledge');
   const knowledge = {};
   for (const name of ['brand', 'ui', 'ux', 'copy']) {
-    knowledge[name] = {};
-    for (const dir of candidates) {
-      try {
-        const raw = fs.readFileSync(path.join(dir, `${name}.json`), 'utf8');
-        knowledge[name] = JSON.parse(raw);
-        break;
-      } catch (err) {
-        // Try next directory
-      }
+    try {
+      const file = path.join(dir, `${name}.json`);
+      const raw = fs.readFileSync(file, 'utf8');
+      knowledge[name] = JSON.parse(raw);
+    } catch (err) {
+      console.warn(`Failed to load ${name}.json: ${err.message}`);
+      knowledge[name] = {};
     }
   }
   return knowledge;
 }
 const KNOWLEDGE = loadKnowledge();
 
-// Utility: sleep helper for the worker loop
+// Utility to sleep
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Generate a unique job id using timestamp and random bits
+// Generate a simple unique identifier based on timestamp and random bits
 function generateId() {
   return (
     Date.now().toString(36) + '-' + Math.random().toString(36).substring(2, 8)
   );
 }
 
-// Build a system prompt that instructs the model how to behave. The preset
-// determines which part of the files may be modified. Brand and knowledge
-// guides are included to ensure consistency.
+// Build a system prompt based on the preset and optional brand metadata.
 function buildSystemPrompt(preset, brand) {
+  // Base instructions common to all jobs
   const base = [];
   base.push(
     'You are an assistant that edits or generates small static websites consisting of three files: index.html, styles/style.css and scripts/app.js.'
   );
   base.push(
-    'Return only a JSON object with a single property "files". The "files" property is an object with exactly three string properties: "index.html", "styles/style.css" and "scripts/app.js".'
+    'You must return a JSON object with a single property "files". The "files" property is an object with exactly three string properties: "index.html", "styles/style.css" and "scripts/app.js".'
   );
   base.push(
     'Do not return any additional properties. Do not wrap the JSON in markdown. Do not include explanations. Always respond with strict JSON.'
@@ -119,9 +88,10 @@ function buildSystemPrompt(preset, brand) {
     'The HTML must not include <script> tags with external src attributes, and the CSS must not include @import rules.'
   );
   base.push(
-    'Preserve the existing structure, responsiveness and accessibility wherever possible.'
+    'Preserve the existing structure and accessibility wherever possible. Maintain responsive layout.'
   );
 
+  // Apply preset‑specific instructions
   switch (preset) {
     case 'code':
       base.push(
@@ -145,43 +115,56 @@ function buildSystemPrompt(preset, brand) {
       break;
     default:
       base.push(
-        'If no preset is specified, you may modify HTML, CSS and JS as needed to satisfy the prompt. Maintain coherence and avoid unnecessary changes.'
+        'If no preset is specified, you may modify HTML, CSS, and JS as needed to satisfy the prompt. Maintain coherence and avoid unnecessary changes.'
       );
       break;
   }
 
-  // Merge brand guidelines. Use provided brand or default brand from knowledge
-  if (brand && typeof brand === 'object' && Object.keys(brand).length > 0) {
-    base.push(
-      'Use the following brand palette and tone. Colours are given as hexadecimal strings.'
-    );
-    base.push(JSON.stringify(brand));
+  // Incorporate brand guidelines if provided
+  if (brand && typeof brand === 'object') {
+    const keys = Object.keys(brand);
+    if (keys.length > 0) {
+      base.push(
+        'Use the following brand palette and tone. Colours are given as hexadecimal strings.'
+      );
+      base.push(JSON.stringify(brand));
+    }
   } else if (KNOWLEDGE.brand && KNOWLEDGE.brand.default) {
-    base.push('When no brand is provided, fall back to this default brand palette and tone:');
+    base.push(
+      'When no brand is provided, fall back to this default brand palette and tone:'
+    );
     base.push(JSON.stringify(KNOWLEDGE.brand.default));
   }
 
-  // UI guidelines
+  // Add UI/UX/copy rules from knowledge documents
   if (KNOWLEDGE.ui && KNOWLEDGE.ui.components) {
-    base.push('Follow these UI component guidelines for consistency:' + JSON.stringify(KNOWLEDGE.ui.components));
+    base.push(
+      'Follow these UI component guidelines for consistency:' +
+        JSON.stringify(KNOWLEDGE.ui.components)
+    );
   }
-  // UX guidelines
   if (KNOWLEDGE.ux && KNOWLEDGE.ux.rules) {
-    base.push('Follow these UX structural rules if you need to rearrange sections:' + JSON.stringify(KNOWLEDGE.ux.rules));
+    base.push(
+      'Follow these UX structural rules if you need to rearrange sections:' +
+        JSON.stringify(KNOWLEDGE.ux.rules)
+    );
   }
-  // Copy guidelines
-  if (KNOWLEDGE.copy && KNOWLEDGE.copy.voice) {
-    base.push('Follow these copywriting guidelines:' + JSON.stringify(KNOWLEDGE.copy));
+  if (KNOWLEDGE.copy && KNOWLEDGE.copy.tone) {
+    base.push(
+      'Follow these copywriting guidelines:' + JSON.stringify(KNOWLEDGE.copy)
+    );
   }
 
   return base.join('\n');
 }
 
-// Build the user content (prompt + files + brand). We always send all three files
-// as strings to give the model complete context.
+// Build the user content payload. This contains the prompt and a snapshot of
+// the existing files. We send all three files, ensuring strings, even if
+// empty, because OpenAI needs complete context. Brand information is also
+// included if provided.
 function buildUserContent(prompt, files, brand) {
   const payload = {
-    prompt: prompt || '',
+    prompt,
     files: {
       'index.html': files['index.html'] || '',
       'styles/style.css': files['styles/style.css'] || '',
@@ -192,8 +175,9 @@ function buildUserContent(prompt, files, brand) {
   return JSON.stringify(payload);
 }
 
-// Validate the AI output. We require a "files" object with exactly three
-// string values. Sanitise HTML by removing external scripts and CSS links.
+// Validate the AI output. Ensures we have the expected structure and that
+// everything is a string. Additional sanitisation removes remote scripts or
+// external stylesheets for security.
 function validateAiOutput(obj) {
   if (!obj || typeof obj !== 'object' || !obj.files) {
     throw new Error('No files property returned');
@@ -205,15 +189,13 @@ function validateAiOutput(obj) {
       throw new Error(`File ${key} missing or not a string`);
     }
   }
-  // Sanitise HTML: remove external scripts and remote CSS links
+  // Sanitise HTML: remove external scripts and stylesheet links
   files['index.html'] = files['index.html'].replace(/<script[^>]*\s+src=['"][^'"]+['"][^>]*>\s*<\/script>/gi, '');
   files['index.html'] = files['index.html'].replace(/<link[^>]+rel=['"]stylesheet['"][^>]+href=['"]http[^'"]+['"][^>]*>/gi, '');
   return files;
 }
 
-// Call OpenAI’s Responses API. Returns { ok: true, files } on success or
-// { ok: false, error } on failure. We implement our own timeout using
-// AbortController.
+// Call OpenAI Responses API with a given model. Returns { ok, files? , error? }.
 async function callOpenAI(model, systemPrompt, userContent) {
   const url = 'https://api.openai.com/v1/responses';
   const headers = {
@@ -243,10 +225,8 @@ async function callOpenAI(model, systemPrompt, userContent) {
       const message = data?.error?.message || `OpenAI HTTP ${resp.status}`;
       return { ok: false, error: message };
     }
-    // Responses API returns `response` with role/content; some versions use
-    // `response` directly or `output_text`. We try several paths.
-    const content =
-      data?.response?.content || data?.response || data?.output_text || '';
+    // The Responses API returns a "response" property with role/content
+    const content = data?.response?.content || data?.response || '';
     let obj;
     try {
       obj = JSON.parse(content);
@@ -265,22 +245,16 @@ async function callOpenAI(model, systemPrompt, userContent) {
   }
 }
 
-// Process a single job by trying the primary model and fallbacks. Updates the
-// job record in Redis on each attempt. On success, stores the files in
-// job.result. On failure, logs the errors and sets status to 'error'.
+// Process a single job by calling one or more models. Mutates and saves
+// the job record in Redis. If AI fails, records error.
 async function runJob(job) {
   job.status = 'running';
   job.updatedAt = Date.now();
   await redis.set('jobs:data:' + job.id, JSON.stringify(job));
-
-  const modelCandidates = [
-    OPENAI_MODEL_PRIMARY,
-    OPENAI_MODEL_FALLBACK,
-    OPENAI_MODEL_FALLBACK2,
-  ].filter(Boolean);
+  const modelCandidates = [OPENAI_MODEL_PRIMARY, OPENAI_MODEL_FALLBACK, OPENAI_MODEL_FALLBACK2].filter(Boolean);
+  // Build prompts once
   const systemPrompt = buildSystemPrompt(job.preset, job.brand);
   const userContent = buildUserContent(job.prompt, job.files, job.brand);
-
   for (const model of modelCandidates) {
     const res = await callOpenAI(model, systemPrompt, userContent);
     if (res.ok) {
@@ -291,30 +265,26 @@ async function runJob(job) {
       await redis.set('jobs:data:' + job.id, JSON.stringify(job));
       return;
     }
-    // Record the failure and continue to next model
+    // Log the error and continue to the next model
     job.logs.push(`Model ${model} failed: ${res.error}`);
     job.updatedAt = Date.now();
     await redis.set('jobs:data:' + job.id, JSON.stringify(job));
   }
-  // All models failed
+  // If we reach here, all models failed
   job.status = 'error';
   job.error = job.logs[job.logs.length - 1] || 'AI failed';
   job.updatedAt = Date.now();
   await redis.set('jobs:data:' + job.id, JSON.stringify(job));
 }
 
-// Worker loop: continuously pop jobs from the queue and process them. If
-// WORKER_ENABLED=false, the loop exits immediately.
+// Background worker loop
 async function workerLoop() {
-  if (WORKER_ENABLED === 'false' || WORKER_ENABLED === false) {
-    console.log('[worker] disabled');
-    return;
-  }
+  if (WORKER_ENABLED === 'false') return;
   while (true) {
     try {
       const jobId = await redis.lpop('jobs:queue');
       if (!jobId) {
-        // No job available; sleep a bit
+        // Sleep briefly if no job
         await sleep(2000);
         continue;
       }
@@ -323,13 +293,14 @@ async function workerLoop() {
       const job = JSON.parse(jobStr);
       await runJob(job);
     } catch (err) {
-      console.error('[worker] error:', err);
+      console.error('Worker error:', err);
+      // Sleep a bit before continuing to avoid tight error loop
       await sleep(2000);
     }
   }
 }
 
-// Middleware to authenticate using a shared secret header
+// Middleware: authenticate using shared secret
 function authenticate(req, res, next) {
   const secret = req.header('x-runner-secret');
   if (!secret || secret !== RUNNER_SHARED_SECRET) {
@@ -338,7 +309,7 @@ function authenticate(req, res, next) {
   next();
 }
 
-// Create a new job: store job data and push to queue
+// Create job
 app.post('/jobs-create', authenticate, async (req, res) => {
   const { preset = '', prompt = '', files = {}, brand = null } = req.body || {};
   if (!files || typeof files !== 'object') {
@@ -360,28 +331,29 @@ app.post('/jobs-create', authenticate, async (req, res) => {
   };
   await redis.set('jobs:data:' + id, JSON.stringify(job));
   await redis.rpush('jobs:queue', id);
-  return res.status(202).json({ ok: true, jobId: id });
+  return res.status(202).json({ jobId: id });
 });
 
-// Fetch the status of a job. Returns current status, result if available,
-// and a truncated list of logs.
+// Get job status
 app.get('/jobs-status', authenticate, async (req, res) => {
   const id = req.query.id;
   if (!id) return res.status(400).json({ error: 'Missing id' });
   const jobStr = await redis.get('jobs:data:' + id);
   if (!jobStr) return res.status(404).json({ error: 'Job not found' });
   const job = JSON.parse(jobStr);
+  // Limit logs to last 20 entries to avoid large payloads
   const logs = Array.isArray(job.logs)
     ? job.logs.slice(Math.max(0, job.logs.length - 20))
     : [];
   return res.json({ status: job.status, result: job.result, error: job.error, logs });
 });
 
-// Start server and worker. We defer starting the worker until after the
-// server has begun listening to avoid race conditions during startup.
-app.listen(PORT, () => {
-  console.log(`[runner] listening on ${PORT}`);
-  workerLoop().catch((err) => {
-    console.error('Worker failed to start:', err);
-  });
+// Start server and worker
+const port = process.env.PORT || 3000;
+app.listen(port, () => {
+  console.log(`Runner service listening on port ${port}`);
+});
+
+workerLoop().catch((err) => {
+  console.error('Worker failed to start:', err);
 });
