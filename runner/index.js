@@ -34,7 +34,10 @@ const {
   OPENAI_MODEL_PRIMARY,
   OPENAI_MODEL_FALLBACK,
   OPENAI_MODEL_FALLBACK2,
-  MODEL_TIMEOUT_MS = '26000',
+  // Increase the default model timeout to 60 seconds to handle complex
+  // prompts such as inserting images or restructuring multiple sections.
+  // You can override this via an environment variable MODEL_TIMEOUT_MS.
+  MODEL_TIMEOUT_MS = '60000',
   WORKER_ENABLED = 'true',
 } = process.env;
 
@@ -290,6 +293,12 @@ async function runJob(job) {
     job.logs.push(`Model ${model} failed: ${res.error}`);
     job.updatedAt = Date.now();
     await redis.set('jobs:data:' + job.id, JSON.stringify(job));
+    // If the error is a timeout, break early instead of trying fallbacks.
+    // Retrying with another model is unlikely to help in the same call
+    // if the prompt itself requires more time than allotted.
+    if (res.error === 'timeout') {
+      break;
+    }
   }
   // If we reach here, all models failed
   job.status = 'error';
