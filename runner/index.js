@@ -202,18 +202,24 @@ async function callOpenAI(model, systemPrompt, userContent) {
     'Content-Type': 'application/json',
     Authorization: `Bearer ${OPENAI_API_KEY}`,
   };
-  // The Responses API previously accepted a `response_format` object but
-  // as of mid‑2025 the parameter was renamed to `text.format` in the
-  // `text` field. See https://platform.openai.com/docs/api-reference/responses/create
-  // for details. We now populate the `text` property accordingly.
+  // NOTE: As of 2025, the Responses API no longer accepts the
+  // `response_format` parameter. Instead, use the `text.format`
+  // field under `text` to request JSON output. See:
+  // https://platform.openai.com/docs/api-reference/responses/create
+  // Build the request body using the 2025 Responses API. The API no longer
+  // accepts `messages` or `response_format`. Use `instructions` for the
+  // system prompt and `input` for the user payload. Request JSON output
+  // using the `text.format` field. See:
+  // https://platform.openai.com/docs/api-reference/responses/create
   const body = {
     model,
-    // Specify the JSON output format in the new `text.format` field.
+    instructions: systemPrompt,
+    // Send the user payload (prompt + files + brand) as a single string in
+    // the `input` field. For more complex conversations, `input` could be an
+    // array of role/content objects, but a single string suffices for our
+    // use case.
+    input: userContent,
     text: { format: 'json_object' },
-    messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: userContent },
-    ],
   };
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), Number(MODEL_TIMEOUT_MS));
@@ -307,12 +313,6 @@ async function workerLoop() {
 
 // Middleware: authenticate using shared secret
 function authenticate(req, res, next) {
-  // If no shared secret is configured, allow any request. This makes it
-  // easier to develop locally or diagnose misconfiguration. In production,
-  // set RUNNER_SHARED_SECRET in the environment to enable auth checks.
-  if (!RUNNER_SHARED_SECRET) {
-    return next();
-  }
   const secret = req.header('x-runner-secret');
   if (!secret || secret !== RUNNER_SHARED_SECRET) {
     return res.status(401).json({ error: 'Unauthorized' });
