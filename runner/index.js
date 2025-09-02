@@ -38,6 +38,20 @@ const {
   WORKER_ENABLED = 'true',
 } = process.env;
 
+// Normalise model identifiers. Users might set shorthand names like 'o4' or
+// 'o4-mini'. Map these to valid OpenAI model IDs. Extend this map as new
+// models emerge. If no mapping exists, return the original value.
+function normalizeModel(name) {
+  const map = {
+    'o4': 'gpt-4o',
+    'o4-mini': 'gpt-4o-mini',
+    'o4-mini-2024-07-18': 'gpt-4o-mini',
+    'gpt5': 'gpt-5',
+    'gpt5-mini': 'gpt-5-mini',
+  };
+  return map[name] || name;
+}
+
 // Connect to Redis
 const redis = new Redis(REDIS_URL);
 
@@ -206,7 +220,8 @@ async function callOpenAI(model, systemPrompt, userContent) {
   };
   const body = {
     model,
-    temperature: 0.2,
+    // Do not specify temperature because some models (e.g. gpt-5, gpt-4o-mini)
+    // accept only the default temperature of 1 and reject custom values.
     response_format: { type: 'json_object' },
     messages: [
       { role: 'system', content: systemPrompt },
@@ -254,7 +269,10 @@ async function runJob(job) {
   job.status = 'running';
   job.updatedAt = Date.now();
   await redis.set('jobs:data:' + job.id, JSON.stringify(job));
-  const modelCandidates = [OPENAI_MODEL_PRIMARY, OPENAI_MODEL_FALLBACK, OPENAI_MODEL_FALLBACK2].filter(Boolean);
+  // Normalise model names to ensure valid OpenAI model IDs. e.g. map 'o4' → 'gpt-4o'
+  const modelCandidates = [OPENAI_MODEL_PRIMARY, OPENAI_MODEL_FALLBACK, OPENAI_MODEL_FALLBACK2]
+    .filter(Boolean)
+    .map((m) => normalizeModel(m));
   // Build prompts once
   const systemPrompt = buildSystemPrompt(job.preset, job.brand);
   const userContent = buildUserContent(job.prompt, job.files, job.brand);
