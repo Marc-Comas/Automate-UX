@@ -1,15 +1,5 @@
 {
-  "name": "ai-runner",
+  "name": "project-central-prod-fixed2",
   "version": "1.0.0",
-  "description": "Asynchronous job runner for AI-driven web edits",
-  "main": "index.js",
-  "type": "commonjs",
-  "scripts": {
-    "start": "node index.js"
-  },
-  "dependencies": {
-    "express": "^4.18.2",
-    "ioredis": "^5.3.2"
-  },
-  "engines": { "node": ">=18" }
+  "type": "module"
 }
