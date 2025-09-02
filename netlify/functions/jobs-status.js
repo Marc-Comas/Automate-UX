@@ -10,7 +10,11 @@ function corsHeaders() {
   return {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'GET,OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    // Allow x-runner-secret header for authenticated requests. The client
+    // does not need to set this header; it is used internally by the
+    // Netlify function when calling the runner. Including it here avoids
+    // CORS preflight issues if ever forwarded through a browser.
+    'Access-Control-Allow-Headers': 'Content-Type,x-runner-secret',
     'Content-Type': 'application/json; charset=utf-8',
   };
 }

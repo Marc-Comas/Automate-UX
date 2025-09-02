@@ -17,7 +17,10 @@ function corsHeaders() {
   return {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'POST,OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type',
+    // Allow x-runner-secret in case the client needs to forward the
+    // shared secret from an authenticated context. Netlify itself uses
+    // this header when proxying to the runner.
+    'Access-Control-Allow-Headers': 'Content-Type,x-runner-secret',
     'Content-Type': 'application/json; charset=utf-8',
   };
 }
