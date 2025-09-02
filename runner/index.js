@@ -302,6 +302,13 @@ async function workerLoop() {
 
 // Middleware: authenticate using shared secret
 function authenticate(req, res, next) {
+  // If no shared secret is configured in the environment, skip auth. This
+  // allows local development or misconfiguration without causing
+  // Unauthorized responses. When RUNNER_SHARED_SECRET is set, the
+  // header must match exactly to proceed.
+  if (!RUNNER_SHARED_SECRET) {
+    return next();
+  }
   const secret = req.header('x-runner-secret');
   if (!secret || secret !== RUNNER_SHARED_SECRET) {
     return res.status(401).json({ error: 'Unauthorized' });
