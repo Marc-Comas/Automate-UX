@@ -1,42 +1,56 @@
 // Netlify Function: jobs-create
-// This serverless function proxies job creation requests to the long‑running
-// job runner service. It receives a job payload from the client, forwards
-// it to the runner with a shared secret for authentication, and returns
-// whatever response the runner sends back. This design keeps the Netlify
-// function fast (it merely creates the job) and delegates all AI work to
-// the dedicated runner.
+// This function accepts a POST request containing a prompt, preset,
+// files snapshot, and optional brand configuration. It forwards the
+// request to the asynchronous runner service using a shared secret
+// header for authentication. The runner then queues the job and
+// returns a 202 response with a jobId.
 
 const RUNNER_URL = process.env.RUNNER_URL || '';
 const SHARED_SECRET = process.env.RUNNER_SHARED_SECRET || '';
 
 /**
- * Build a standard CORS header block for JSON responses. In production you
- * should restrict `Access-Control-Allow-Origin` to your own domains.
+ * Build common CORS headers for responses. We allow any origin here to
+ * simplify development. In production you can set ALLOWED_ORIGIN in
+ * Netlify environment variables and update jobs-status.js similarly.
  */
 function corsHeaders() {
   return {
     'Access-Control-Allow-Origin': '*',
     'Access-Control-Allow-Methods': 'POST,OPTIONS',
-    // Allow x-runner-secret in case the client needs to forward the
-    // shared secret from an authenticated context. Netlify itself uses
-    // this header when proxying to the runner.
+    // Allow x-runner-secret for server-to-server auth; the browser does
+    // not need to set it but including it here avoids CORS preflight
+    // issues if ever forwarded through a browser proxy.
     'Access-Control-Allow-Headers': 'Content-Type,x-runner-secret',
     'Content-Type': 'application/json; charset=utf-8',
   };
 }
 
 exports.handler = async function(event) {
-  // Support CORS preflight
+  // Handle CORS preflight
   if (event.httpMethod === 'OPTIONS') {
     return { statusCode: 204, headers: corsHeaders(), body: '' };
   }
-  // Only allow POST
+  // Only accept POST requests
   if (event.httpMethod !== 'POST') {
-    return { statusCode: 405, headers: corsHeaders(), body: JSON.stringify({ error: 'Method not allowed' }) };
+    return {
+      statusCode: 405,
+      headers: corsHeaders(),
+      body: JSON.stringify({ error: 'Method not allowed' }),
+    };
   }
+  // Parse the JSON body from the client. If parsing fails, return 400.
+  let body;
   try {
-    const body = JSON.parse(event.body || '{}');
-    // Forward the payload to the runner
+    body = event.body ? JSON.parse(event.body) : {};
+  } catch (err) {
+    return {
+      statusCode: 400,
+      headers: corsHeaders(),
+      body: JSON.stringify({ error: 'Invalid JSON body' }),
+    };
+  }
+  // Forward the request to the runner
+  try {
     const response = await fetch(`${RUNNER_URL}/jobs-create`, {
       method: 'POST',
       headers: {
