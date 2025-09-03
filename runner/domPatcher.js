@@ -1,10 +1,10 @@
 // runner/domPatcher.js
-// Apply JSON ops *only inside* a root container and never through protected selectors.
+// Minimal DOM patcher that only allows modifications inside a root container
+// and refuses to touch protected selectors.
 
 import { JSDOM } from 'jsdom';
 
 function contains(rootEl, candidate) {
-  if (!rootEl || !candidate) return false;
   if (rootEl === candidate) return true;
   let n = candidate;
   while (n) {
@@ -14,72 +14,104 @@ function contains(rootEl, candidate) {
   return false;
 }
 
-function queryAll(scope, selector) {
-  try { return Array.from(scope.querySelectorAll(selector)); }
-  catch { return []; }
+function anyMatch(root, selector) {
+  try {
+    return Array.from(root.querySelectorAll(selector));
+  } catch {
+    return [];
+  }
 }
 
 export function applyOps({ html, css, ops, root, protectedSelectors = [] }) {
   const dom = new JSDOM(html);
   const doc = dom.window.document;
 
-  const roots = queryAll(doc, root);
+  // Determine root container(s)
+  const roots = Array.from(doc.querySelectorAll(root));
   const safeRoots = roots.length ? roots : [doc.body];
 
   // Build protected node set
   const protectedNodes = new Set();
   for (const sel of protectedSelectors) {
-    for (const node of queryAll(doc, sel)) protectedNodes.add(node);
+    for (const node of doc.querySelectorAll(sel)) {
+      protectedNodes.add(node);
+    }
   }
-
-  const isInProtected = (el) => {
-    for (const p of protectedNodes) if (contains(p, el)) return true;
-    return false;
-  };
-
-  const isInAnyRoot = (el) => safeRoots.some(r => contains(r, el));
 
   let changed = 0;
 
-  for (const op of ops) {
-    if (!op || !op.op || !op.selector) continue;
+  const inProtected = (el) => {
+    if (!el) return false;
+    for (const p of protectedNodes) {
+      if (contains(p, el)) return true;
+    }
+    return false;
+  };
 
-    // Find candidates only under allowed roots
-    const candidates = safeRoots.flatMap(r => queryAll(r, op.selector));
+  for (const op of ops) {
+    const { selector } = op;
+    if (!selector || !op.op) continue;
+
+    // Resolve elements inside allowed roots only
+    let candidates = [];
+    for (const r of safeRoots) {
+      candidates.push(...anyMatch(r, selector));
+    }
     if (!candidates.length) continue;
 
     for (const el of candidates) {
-      if (!isInAnyRoot(el) || isInProtected(el)) continue;
+      if (inProtected(el)) continue;
 
       switch (op.op) {
         case 'replace_text':
-          if (typeof op.text === 'string') { el.textContent = op.text; changed++; }
+          if (typeof op.text === 'string') {
+            el.textContent = op.text;
+            changed++;
+          }
           break;
         case 'append_html':
-          if (typeof op.html === 'string') { el.insertAdjacentHTML('beforeend', op.html); changed++; }
+          if (typeof op.html === 'string') {
+            el.insertAdjacentHTML('beforeend', op.html);
+            changed++;
+          }
           break;
         case 'replace_html':
-          if (typeof op.html === 'string') { el.innerHTML = op.html; changed++; }
+          if (typeof op.html === 'string') {
+            el.innerHTML = op.html;
+            changed++;
+          }
           break;
         case 'set_attr':
-          if (op.attr) { el.setAttribute(op.attr, op.value ?? ''); changed++; }
+          if (op.attr) {
+            el.setAttribute(op.attr, op.value ?? '');
+            changed++;
+          }
           break;
         case 'add_class':
-          if (op.value) { el.classList.add(...op.value.split(/\s+/).filter(Boolean)); changed++; }
+          if (op.value) {
+            el.classList.add(...op.value.split(/\s+/).filter(Boolean));
+            changed++;
+          }
           break;
         case 'remove_class':
-          if (op.value) { el.classList.remove(...op.value.split(/\s+/).filter(Boolean)); changed++; }
+          if (op.value) {
+            el.classList.remove(...op.value.split(/\s+/).filter(Boolean));
+            changed++;
+          }
           break;
-        case 'upsert_style':
+        case 'upsert_style': {
+          // Simple CSS append/update. We just append rules if not present.
           if (op.cssSelector && op.styleRules) {
             const block = `\n${op.cssSelector} { ${op.styleRules} }`;
-            if (!css.includes(block.strip ? block.strip() : block.trim())) {
+            if (!css.includes(block.trim())) {
               css += block;
               changed++;
             }
           }
           break;
-        default: break;
+        }
+        default:
+          break;
       }
     }
   }
