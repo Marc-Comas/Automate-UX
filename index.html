@@ -627,27 +627,45 @@ async function renderPreview(params){
               const jobId = data.jobId;
               pvInfo.textContent = 'IA trabajando...';
               // Función recursiva de polling. Consulta periódicamente el estado del job.
+              
+              let failures = 0;
               const poll = async () => {
-                const statusRes = await fetch('/.netlify/functions/jobs-status?id=' + encodeURIComponent(jobId), {
-                  method: 'GET'
-                });
-                const statusData = await statusRes.json().catch(() => ({}));
-                if (statusRes.status === 200) {
-                  if (statusData.status === 'done') {
-                    const files = statusData.result && statusData.result.files;
-                    if (!files) throw new Error('El trabajo se completó sin archivos');
-                    const updated = { ...proj, files, status: 'edited', updatedAt: Date.now() };
-                    await upsertProject(updated);
-                    renderPreview(new URLSearchParams(`id=${encodeURIComponent(getProjectKey(proj))}`));
-                    pvInfo.textContent = 'Cambios aplicados (IA).';
-                  } else if (statusData.status === 'error') {
-                    throw new Error(statusData.error || 'Error en el trabajo IA');
+                try {
+                  const statusRes = await fetch('/.netlify/functions/jobs-status?id=' + encodeURIComponent(jobId), { method: 'GET' });
+                  const statusData = await statusRes.json().catch(() => ({}));
+                  if (statusRes.status === 200) {
+                    if (statusData.status === 'done') {
+                      const files = statusData.result && statusData.result.files;
+                      if (!files) throw new Error('El trabajo se completó sin archivos');
+                      const updated = { ...proj, files, status: 'edited', updatedAt: Date.now() };
+                      await upsertProject(updated);
+                      renderPreview(new URLSearchParams(`id=${encodeURIComponent(getProjectKey(proj))}`));
+                      pvInfo.textContent = 'Cambios aplicados (IA).';
+                      return;
+                    } else if (statusData.status === 'error') {
+                      throw new Error(statusData.error || 'Error en el trabajo IA');
+                    } else {
+                      setTimeout(poll, 2000);
+                      return;
+                    }
                   } else {
-                    // Aún en progreso, repetimos después de un breve retraso
-                    setTimeout(poll, 2000);
+                    // Si el runner está momentáneamente inaccesible, reintentar hasta 5 veces.
+                    const transient = statusRes.status >= 500 || (statusData && /fetch failed/i.test(statusData.error||''));
+                    if (transient && failures < 5) {
+                      failures++;
+                      setTimeout(poll, 1500 * failures);
+                      return;
+                    }
+                    throw new Error(statusData.error || 'No se pudo consultar el estado del trabajo');
                   }
-                } else {
-                  throw new Error(statusData.error || 'No se pudo consultar el estado del trabajo');
+                } catch (e) {
+                  // Network o excepción JS: también aplicar reintentos suaves
+                  if (failures < 5) {
+                    failures++;
+                    setTimeout(poll, 1500 * failures);
+                    return;
+                  }
+                  throw e;
                 }
               };
               poll();
