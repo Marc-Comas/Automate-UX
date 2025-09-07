@@ -1,75 +1,69 @@
-// Netlify Function: jobs-create
-// This function accepts a POST request containing a prompt, preset,
-// files snapshot, and optional brand configuration. It forwards the
-// request to the asynchronous runner service using a shared secret
-// header for authentication. The runner then queues the job and
-// returns a 202 response with a jobId.
+// Netlify Function: jobs-create (proxy to Runner)
+// POST /.netlify/functions/jobs-create
+//
+// Body: { preset, prompt, name, files, brand }
+// Proxies to: POST {RUNNER_URL}/jobs-create  (x-runner-secret header)
+// Returns: 202 { jobId } or error JSON
 
 const RUNNER_URL = process.env.RUNNER_URL || '';
-const SHARED_SECRET = process.env.RUNNER_SHARED_SECRET || '';
+const RUNNER_SHARED_SECRET = process.env.RUNNER_SHARED_SECRET || '';
 
-/**
- * Build common CORS headers for responses. We allow any origin here to
- * simplify development. In production you can set ALLOWED_ORIGIN in
- * Netlify environment variables and update jobs-status.js similarly.
- */
 function corsHeaders() {
+  const allow = process.env.ALLOWED_ORIGIN || '*';
   return {
-    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Origin': allow,
     'Access-Control-Allow-Methods': 'POST,OPTIONS',
-    // Allow x-runner-secret for server-to-server auth; the browser does
-    // not need to set it but including it here avoids CORS preflight
-    // issues if ever forwarded through a browser proxy.
-    'Access-Control-Allow-Headers': 'Content-Type,x-runner-secret',
+    'Access-Control-Allow-Headers': 'Content-Type',
     'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'no-store',
   };
 }
 
-exports.handler = async function(event) {
-  // Handle CORS preflight
+exports.handler = async (event) => {
+  // CORS preflight
   if (event.httpMethod === 'OPTIONS') {
     return { statusCode: 204, headers: corsHeaders(), body: '' };
   }
-  // Only accept POST requests
   if (event.httpMethod !== 'POST') {
-    return {
-      statusCode: 405,
-      headers: corsHeaders(),
-      body: JSON.stringify({ error: 'Method not allowed' }),
-    };
+    return { statusCode: 405, headers: corsHeaders(), body: JSON.stringify({ error: 'Method Not Allowed' }) };
   }
-  // Parse the JSON body from the client. If parsing fails, return 400.
-  let body;
+
+  let payload;
   try {
-    body = event.body ? JSON.parse(event.body) : {};
-  } catch (err) {
-    return {
-      statusCode: 400,
-      headers: corsHeaders(),
-      body: JSON.stringify({ error: 'Invalid JSON body' }),
-    };
+    payload = JSON.parse(event.body || '{}');
+  } catch {
+    return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'Invalid JSON body' }) };
   }
-  // Forward the request to the runner
+
+  const { preset = '', prompt = '', name = '', files = {}, brand = null } = payload || {};
+  if (!files || typeof files !== 'object') {
+    return { statusCode: 400, headers: corsHeaders(), body: JSON.stringify({ error: 'files must be provided' }) };
+  }
+  if (!RUNNER_URL || !RUNNER_SHARED_SECRET) {
+    return { statusCode: 500, headers: corsHeaders(), body: JSON.stringify({ error: 'Runner not configured (env RUNNER_URL/RUNNER_SHARED_SECRET)' }) };
+  }
+
   try {
-    const response = await fetch(`${RUNNER_URL}/jobs-create`, {
+    const controller = new AbortController();
+    const timeoutMs = Number(process.env.RUNNER_FETCH_TIMEOUT_MS || 10000);
+    const to = setTimeout(() => controller.abort(), timeoutMs);
+
+    const url = `${RUNNER_URL.replace(/\/+$/,'')}/jobs-create`;
+    const res = await fetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-runner-secret': SHARED_SECRET,
+        'x-runner-secret': RUNNER_SHARED_SECRET,
       },
-      body: JSON.stringify(body),
-    });
-    const data = await response.json().catch(() => ({}));
-    return {
-      statusCode: response.status,
-      headers: corsHeaders(),
-      body: JSON.stringify(data),
-    };
+      body: JSON.stringify({ preset, prompt, name, files, brand }),
+      signal: controller.signal
+    }).catch((e) => ({ ok:false, status: 502, json: async () => ({ error: 'fetch failed', detail: String(e && e.message || e) }) }));
+
+    clearTimeout(to);
+
+    const data = await res.json().catch(() => ({}));
+    return { statusCode: res.status || 502, headers: corsHeaders(), body: JSON.stringify(data) };
   } catch (err) {
-    return {
-      statusCode: 500,
-      headers: corsHeaders(),
-      body: JSON.stringify({ error: err.message || 'Internal error' }),
-    };
+    return { statusCode: 500, headers: corsHeaders(), body: JSON.stringify({ error: err.message || 'Internal error' }) };
   }
 };
