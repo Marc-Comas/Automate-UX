@@ -509,7 +509,7 @@ function wireNewForm(){
     const prompt=$('#prompt').value.trim(); const name=$('#name').value.trim()||'proyecto';
     if(!prompt){ errors.hidden=false; errors.textContent='El prompt es requerido.'; return; }
     const gen=generateSite({name,prompt}); const iframe=$('#preview');
-    iframe.src=URL.createObjectURL(new Blob([buildPreviewHtml(gen.files||{})],{type:'text/html'}));
+    iframe.src=URL.createObjectURL(new Blob([gen.files['index.html']],{type:'text/html'}));
     $('#local-preview').hidden=false; info.hidden=false; info.textContent='Preview local generado.'; errors.hidden=true;
   };
   form.onsubmit=async(e)=>{
@@ -560,15 +560,6 @@ async function deleteProject(id){
 /* ===== Preview ===== */
 function getProjectByIdLocal(id){ return findProjectByIdOrSlug(id); }
 function openPreview(projOrId){ const id = typeof projOrId==='string' ? projOrId : getProjectKey(projOrId); if(!id) return; location.hash = `#/preview?id=${encodeURIComponent(id)}`; }
-// Helper: build preview HTML by injecting CSS & JS from files
-function buildPreviewHtml(files){
-  const html = (files && files['index.html']) ? String(files['index.html']) : '<!doctype html><html><head><meta charset="utf-8"></head><body><h1>Sin index.html</h1></body></html>';
-  const css  = (files && (files['styles/style.css'] || files['style.css'])) || '';
-  const js   = (files && (files['scripts/app.js']   || files['app.js']))   || '';
-  const withCss = html.includes('</head>') ? html.replace('</head>', `<style id="__injected_css__">${css}</style></head>`) : `<style id="__injected_css__">${css}</style>` + html;
-  const withJs  = withCss.includes('</body>') ? withCss.replace('</body>', `<script id="__injected_js__">${js}</script></body>`) : withCss + `<script id="__injected_js__">${js}</script>`;
-  return withJs;
-}
 async function renderPreview(params){
   const id = params.get('id');
   let proj = id ? getProjectByIdLocal(id) : null;
@@ -593,7 +584,7 @@ async function renderPreview(params){
   pvTitle.textContent = `Preview — ${proj.name||proj.slug||id}`;
   const iframe = $('#pv-iframe');
   const html = (proj.files && proj.files['index.html']) ? proj.files['index.html'] : '<h1>Sin index.html</h1>';
-  iframe.src = URL.createObjectURL(new Blob([buildPreviewHtml(proj.files||{})],{type:'text/html'}));
+  iframe.src = URL.createObjectURL(new Blob([html],{type:'text/html'}));
 
   $('#pv-download').onclick=()=>{ const blob=makeZip(proj.files||{}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`${(proj.name||proj.slug||'site')}.zip`; a.click(); URL.revokeObjectURL(a.href); };
 
@@ -636,27 +627,45 @@ async function renderPreview(params){
               const jobId = data.jobId;
               pvInfo.textContent = 'IA trabajando...';
               // Función recursiva de polling. Consulta periódicamente el estado del job.
+              
+              let failures = 0;
               const poll = async () => {
-                const statusRes = await fetch('/.netlify/functions/jobs-status?id=' + encodeURIComponent(jobId), {
-                  method: 'GET'
-                });
-                const statusData = await statusRes.json().catch(() => ({}));
-                if (statusRes.status === 200) {
-                  if (statusData.status === 'done') {
-                    const files = statusData.result && statusData.result.files;
-                    if (!files) throw new Error('El trabajo se completó sin archivos');
-                    const updated = { ...proj, files, status: 'edited', updatedAt: Date.now() };
-                    /* async */ upsertProject(updated);
-                    renderPreview(new URLSearchParams(`id=${encodeURIComponent(getProjectKey(proj))}`));
-                    pvInfo.textContent = 'Cambios aplicados (IA).';
-                  } else if (statusData.status === 'error') {
-                    throw new Error(statusData.error || 'Error en el trabajo IA');
+                try {
+                  const statusRes = await fetch('/.netlify/functions/jobs-status?id=' + encodeURIComponent(jobId), { method: 'GET' });
+                  const statusData = await statusRes.json().catch(() => ({}));
+                  if (statusRes.status === 200) {
+                    if (statusData.status === 'done') {
+                      const files = statusData.result && statusData.result.files;
+                      if (!files) throw new Error('El trabajo se completó sin archivos');
+                      const updated = { ...proj, files, status: 'edited', updatedAt: Date.now() };
+                      await upsertProject(updated);
+                      renderPreview(new URLSearchParams(`id=${encodeURIComponent(getProjectKey(proj))}`));
+                      pvInfo.textContent = 'Cambios aplicados (IA).';
+                      return;
+                    } else if (statusData.status === 'error') {
+                      throw new Error(statusData.error || 'Error en el trabajo IA');
+                    } else {
+                      setTimeout(poll, 2000);
+                      return;
+                    }
                   } else {
-                    // Aún en progreso, repetimos después de un breve retraso
-                    setTimeout(poll, 2000);
+                    // Si el runner está momentáneamente inaccesible, reintentar hasta 5 veces.
+                    const transient = statusRes.status >= 500 || (statusData && /fetch failed/i.test(statusData.error||''));
+                    if (transient && failures < 5) {
+                      failures++;
+                      setTimeout(poll, 1500 * failures);
+                      return;
+                    }
+                    throw new Error(statusData.error || 'No se pudo consultar el estado del trabajo');
                   }
-                } else {
-                  throw new Error(statusData.error || 'No se pudo consultar el estado del trabajo');
+                } catch (e) {
+                  // Network o excepción JS: también aplicar reintentos suaves
+                  if (failures < 5) {
+                    failures++;
+                    setTimeout(poll, 1500 * failures);
+                    return;
+                  }
+                  throw e;
                 }
               };
               poll();
