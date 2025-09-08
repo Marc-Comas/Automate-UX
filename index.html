@@ -509,7 +509,8 @@ function wireNewForm(){
     const prompt=$('#prompt').value.trim(); const name=$('#name').value.trim()||'proyecto';
     if(!prompt){ errors.hidden=false; errors.textContent='El prompt es requerido.'; return; }
     const gen=generateSite({name,prompt}); const iframe=$('#preview');
-    iframe.src=URL.createObjectURL(new Blob([gen.files['index.html']],{type:'text/html'}));
+    // Use buildPreviewHtml so that CSS/JS from generated files are injected into the preview
+    iframe.src=URL.createObjectURL(new Blob([buildPreviewHtml(gen.files||{})],{type:'text/html'}));
     $('#local-preview').hidden=false; info.hidden=false; info.textContent='Preview local generado.'; errors.hidden=true;
   };
   form.onsubmit=async(e)=>{
@@ -560,6 +561,25 @@ async function deleteProject(id){
 /* ===== Preview ===== */
 function getProjectByIdLocal(id){ return findProjectByIdOrSlug(id); }
 function openPreview(projOrId){ const id = typeof projOrId==='string' ? projOrId : getProjectKey(projOrId); if(!id) return; location.hash = `#/preview?id=${encodeURIComponent(id)}`; }
+
+// Helper: build preview HTML by injecting CSS and JS from files. It takes the base HTML
+// (index.html) and, if present, prepends <style> tags for styles/style.css or style.css,
+// and appends <script> tags for scripts/app.js or app.js. This allows UI tweaks that
+// affect CSS or JS to be visible in the preview iframe, solving "cambios fantasma".
+function buildPreviewHtml(files){
+  const html = (files && files['index.html']) ? String(files['index.html']) : '<!doctype html><html><head><meta charset="utf-8"></head><body><h1>Sin index.html</h1></body></html>';
+  const css  = (files && (files['styles/style.css'] || files['style.css'])) || '';
+  const js   = (files && (files['scripts/app.js']   || files['app.js']))   || '';
+  // Inject CSS before </head> if possible, otherwise prepend
+  const withCss = html.includes('</head>') ?
+    html.replace('</head>', `<style id="__injected_css__">${css}</style></head>`) :
+    `<style id="__injected_css__">${css}</style>` + html;
+  // Inject JS before </body> if possible, otherwise append
+  const withJs  = withCss.includes('</body>') ?
+    withCss.replace('</body>', `<script id="__injected_js__">${js}</script></body>`) :
+    withCss + `<script id="__injected_js__">${js}</script>`;
+  return withJs;
+}
 async function renderPreview(params){
   const id = params.get('id');
   let proj = id ? getProjectByIdLocal(id) : null;
@@ -584,7 +604,9 @@ async function renderPreview(params){
   pvTitle.textContent = `Preview — ${proj.name||proj.slug||id}`;
   const iframe = $('#pv-iframe');
   const html = (proj.files && proj.files['index.html']) ? proj.files['index.html'] : '<h1>Sin index.html</h1>';
-  iframe.src = URL.createObjectURL(new Blob([html],{type:'text/html'}));
+  // Inject CSS and JS into the preview so that UI edits beyond index.html (e.g. styles/style.css or scripts/app.js)
+  // are visible. This helps prevent "cambios fantasma" in la preview.
+  iframe.src = URL.createObjectURL(new Blob([buildPreviewHtml(proj.files||{})],{type:'text/html'}));
 
   $('#pv-download').onclick=()=>{ const blob=makeZip(proj.files||{}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download=`${(proj.name||proj.slug||'site')}.zip`; a.click(); URL.revokeObjectURL(a.href); };
 
